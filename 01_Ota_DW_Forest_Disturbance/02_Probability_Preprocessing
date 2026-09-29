@@ -1,0 +1,83 @@
+// ============================================================
+// PROJECT 01 — STEP 02
+// Dynamic World probability preprocessing
+// Study area: Madhupur National Park
+// ============================================================
+
+// ------------------------------------------------------------
+// 1. LOAD AOI
+// ------------------------------------------------------------
+
+
+var wdpa = ee.FeatureCollection('WCMC/WDPA/current/polygons');
+
+var madhupur = wdpa.filter(ee.Filter.eq('SITE_ID', 4481));
+
+var aoi = madhupur.geometry();
+
+Map.centerObject(aoi, 11);
+
+// ------------------------------------------------------------
+// 2. LOAD DYNAMIC WORLD
+// ------------------------------------------------------------
+
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORD/V1')
+  .filterBounds(aoi)
+  .filterDate('2016-01-01', '2026-01-01')
+  .filter(ee.Filter.calendarRange(11,12,'month'));
+  
+// ------------------------------------------------------------
+//  3. CREATE functional probability groups
+// -------------------------------------------------------------
+
+var 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
