@@ -78,6 +78,11 @@ var trees2025Inspection = dw2025
   
 print(trees2025Inspection);  
 
+
+// ------------------------------------------------------------
+// 6. VISUALIZE TREE PROBABILITY
+// ------------------------------------------------------------
+
 Map.addLayer(
   trees2025Inspection,
   {
