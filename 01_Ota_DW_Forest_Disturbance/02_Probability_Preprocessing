@@ -30,7 +30,34 @@ var dw = ee.ImageCollection('GOOGLE/DYNAMICWORD/V1')
 //  3. CREATE functional probability groups
 // -------------------------------------------------------------
 
-var 
+var prepocessDW = function(image) {
+  
+  // Individual probabilities
+  var trees = image.select('trees');
+  var water = image.select('water');
+  var built = image.select('built');
+  var bare = image.select('bare');
+  var snow = image.select('snow_and_ice');
+  
+  // Combine non-tree vegetation probabilities 
+  var vegetation = image
+    .select(['grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub'])
+    .reduce(ee.Reducer.sum())
+    .rename('vegetation');
+    
+  // Combine into one image 
+  return ee.Image.cat([
+    trees.rename('trees'),
+    water.rename('water'),
+    built.rename('built'),
+    bare.rename('bare'),
+    snow.rename('snow_and_ice'), 
+    vegetation
+    ])
+  
+  .copyProperties(image, ['system:time_start']);
+  
+}
 
 
 
