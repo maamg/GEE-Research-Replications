@@ -1,0 +1,105 @@
+var wdpa= ee.FeatureCollection('WCMC/WDPA/current/polygons');
+
+var madhupur= wdpa.filter(ee.Filter.eq( 'SITE_ID', 4481));
+
+// print('Madhupur National Park feature:', madhupur);
+// print('Number of matched features: ', madhupur.size());
+
+// Study-area geometry 
+var aoi = madhupur.geometry();
+
+// Calculating area for checking 
+var areaHa = aoi.area().divide(10000);
+
+print('AOI area (ha): ', areaHa );
+
+
+// Display 
+Map.centerObject(madhupur, 11);
+
+Map.addLayer(
+  madhupur,
+  {color: 'yellow'}, 
+  'Madhupur National Park'
+);
+
+
+// ---------------------------------
+// 2. LOAD DYNANIC WORLD 
+// ------------------------
+
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+  .filterBounds(aoi)
+  .filterDate('2016-01-01', '2026-01-01');
+  
+print('All Dyanamic World images, 2016-2025', dw.size());
+
+// -------------------
+// 3. KEEP NOVEMBER-DECEMBER ONLY
+// ----------------------
+
+var dwDrySeason = dw.filter(ee.Filter.calendarRange(11, 12, 'month')); // 11th and 12th month's images will be filtered
+
+// print('Dynamic World image in Nove-Dec, 2016-2025; ', dwDrySeason.size());
+
+
+// ------------------------------------------------------------
+// 4. SELECT DYNAMIC WORLD PROBABILITY BANDS
+// ------------------------------------------------------------
+var probabilityBands = [
+  'water',
+  'trees',
+  'grass',
+  'flooded_vegetation',
+  'crops',
+  'shrub_and_scrub',
+  'built',
+  'bare',
+  'snow_and_ice'
+];
+
+var dwProbability = dwDrySeason.select(probabilityBands);
+
+print('Probability collection:',dwProbability);
+
+// ------------------------------------------------------------
+// 5. INSPECT ONE YEAR: 2025
+// ------------------------------------------------------------
+
+var dw2025 = dwProbability.filterDate('2025-11-01', '2026-01-01');
+print( 'Nov–Dec 2025 observations:', dw2025.size());
+
+
+// Simple median TREE probability.
+var trees2025Inspection = dw2025
+  .select('trees')
+  .median()
+  .clip(aoi);
+  
+print(trees2025Inspection);  
+
+Map.addLayer(
+  trees2025Inspection,
+  {
+    min: 0,
+    max: 1,
+    palette: ['white', 'lightgreen', 'darkgreen']
+  },
+  '2025 Tree Probability --Inspection'
+);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
