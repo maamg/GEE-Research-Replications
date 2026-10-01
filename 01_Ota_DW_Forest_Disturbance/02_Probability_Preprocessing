@@ -32,20 +32,20 @@ var dw = ee.ImageCollection('GOOGLE/DYNAMICWORD/V1')
 
 var prepocessDW = function(image) {
   
-  // Individual probabilities
+  // Individual probabilities (here all the band values are extracted to different variables)
   var trees = image.select('trees');
   var water = image.select('water');
   var built = image.select('built');
   var bare = image.select('bare');
   var snow = image.select('snow_and_ice');
   
-  // Combine non-tree vegetation probabilities 
+  // Combine non-tree vegetation probabilities (selecting all the vegetable types bands calculate the summition and keep it a new band named 'vegetation')
   var vegetation = image
     .select(['grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub'])
     .reduce(ee.Reducer.sum())
     .rename('vegetation');
     
-  // Combine into one image 
+  // Combine into one image (!Exactly what's machanism happend here I coundn't understand!)
   return ee.Image.cat([
     trees.rename('trees'),
     water.rename('water'),
@@ -55,7 +55,7 @@ var prepocessDW = function(image) {
     vegetation
     ])
   
-  .copyProperties(image, ['system:time_start']);
+  .copyProperties(image, ['system:time_start']); // also what is happing here?
   
 }
 
