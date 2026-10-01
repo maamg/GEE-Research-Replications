@@ -55,7 +55,7 @@ var prepocessDW = function(image) {
     vegetation
     ])
   
-  .copyProperties(image, ['system:time_start']); // also what is happing here?
+  .copyProperties(image, ['system:time_start']); // (also what is happing here?)
   
 }
 
