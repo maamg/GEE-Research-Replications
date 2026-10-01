@@ -120,7 +120,7 @@ var annualCollection = ee.ImageCollection.fromImages(
 );
 
 
-print('1. Annual probability collection:',annualCollection);
+print('Annual probability collection:',annualCollection);
 
 
 // ------------------------------------------------------------
@@ -131,22 +131,13 @@ var annualImageCounts = ee.FeatureCollection(
 
   annualCollection.map(function(image) {
 
-    return ee.Feature(
-      null,
-      {
-        year: image.get('year'),
-        image_count: image.get('image_count')
-      }
-    );
+    return ee.Feature(null,{year: image.get('year'),image_count: image.get('image_count')});
 
   })
 
 );
 
-print(
-  '2. Dynamic World observation counts by year:',
-  annualImageCounts
-);
+print('Dynamic World observation counts by year:',annualImageCounts);
 
 
 // ------------------------------------------------------------
