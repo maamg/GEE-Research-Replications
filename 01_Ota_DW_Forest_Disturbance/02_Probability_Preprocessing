@@ -46,7 +46,7 @@ var prepocessDW = function(image) {
     .reduce(ee.Reducer.sum())
     .rename('vegetation');
     
-  // Combine into one image (!Exactly what's machanism happend here I coundn't understand!)
+  // Combine into one image
   return ee.Image.cat([
     trees.rename('trees'),
     water.rename('water'),
@@ -56,7 +56,7 @@ var prepocessDW = function(image) {
     vegetation
     ])
   
-  .copyProperties(image, ['system:time_start']); // (also what is happing here?)
+  .copyProperties(image, ['system:time_start']); 
   
 }
 
