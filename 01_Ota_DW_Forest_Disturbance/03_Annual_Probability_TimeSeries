@@ -1,0 +1,327 @@
+// ============================================================
+// PROJECT 01 — STEP 03
+// Annual Dynamic World Probability Time Series
+// Study area: Madhupur National Park, Bangladesh
+// Learning / diagnostic stage
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 1. LOAD AOI
+// ------------------------------------------------------------
+
+var wdpa = ee.FeatureCollection('WCMC/WDPA/current/polygons');
+
+var madhupur = wdpa.filter(
+  ee.Filter.eq('SITE_ID', 4481)
+);
+
+var aoi = madhupur.geometry();
+
+Map.centerObject(aoi, 11);
+
+
+// ------------------------------------------------------------
+// 2. LOAD DYNAMIC WORLD
+// ------------------------------------------------------------
+
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+  .filterBounds(aoi)
+  .filterDate('2016-01-01', '2026-01-01')
+  .filter(
+    ee.Filter.calendarRange(11, 12, 'month')
+  );
+
+
+// ------------------------------------------------------------
+// 3. PREPROCESS 9 BANDS -> 6 FUNCTIONAL GROUPS
+// ------------------------------------------------------------
+
+var preprocessDW = function(image) {
+
+  var trees = image.select('trees');
+
+  var water = image.select('water');
+
+  var built = image.select('built');
+
+  var bare = image.select('bare');
+
+  var snow = image.select('snow_and_ice');
+
+  var vegetation = image
+    .select([
+      'grass',
+      'flooded_vegetation',
+      'crops',
+      'shrub_and_scrub'
+    ])
+    .reduce(ee.Reducer.sum())
+    .rename('vegetation');
+
+
+  return ee.Image.cat([
+      trees.rename('trees'),
+      water.rename('water'),
+      built.rename('built'),
+      bare.rename('bare'),
+      snow.rename('snow_and_ice'),
+      vegetation
+    ])
+    .copyProperties(
+      image,
+      ['system:time_start']
+    );
+};
+
+
+var dw6 = dw.map(preprocessDW);
+
+
+// ------------------------------------------------------------
+// 4. CREATE YEAR LIST
+// ------------------------------------------------------------
+
+var years = ee.List.sequence(2016, 2025);
+
+print('Years:', years);
+
+
+// ------------------------------------------------------------
+// 5. CREATE ONE ANNUAL IMAGE FOR EACH YEAR
+// ------------------------------------------------------------
+
+var annualCollection = ee.ImageCollection.fromImages(
+
+  years.map(function(year) {
+
+    year = ee.Number(year);
+
+    var start = ee.Date.fromYMD(year, 11, 1);
+
+    var end = ee.Date.fromYMD(year.add(1),1,1);
+
+    var yearlyDW = dw6.filterDate(start, end);
+
+
+    // Diagnostic annual composite:
+    // median probability during Nov-Dec
+
+    var annualImage = yearlyDW
+      .median()
+      .clip(aoi);
+
+
+    return annualImage
+      .set('year', year)
+      .set('system:time_start',ee.Date.fromYMD(year, 12, 1).millis())
+      .set('image_count',yearlyDW.size());
+  })
+);
+
+
+print(
+  '1. Annual probability collection:',
+  annualCollection
+);
+
+
+// ------------------------------------------------------------
+// 6. CHECK NUMBER OF IMAGES USED EACH YEAR
+// ------------------------------------------------------------
+
+var annualImageCounts = ee.FeatureCollection(
+
+  annualCollection.map(function(image) {
+
+    return ee.Feature(
+      null,
+      {
+        year: image.get('year'),
+        image_count: image.get('image_count')
+      }
+    );
+
+  })
+
+);
+
+print(
+  '2. Dynamic World observation counts by year:',
+  annualImageCounts
+);
+
+
+// ------------------------------------------------------------
+// 7. VISUALIZE SELECTED YEARS
+// ------------------------------------------------------------
+
+var trees2016 = annualCollection
+  .filter(ee.Filter.eq('year', 2016))
+  .first()
+  .select('trees');
+
+
+var trees2020 = annualCollection
+  .filter(ee.Filter.eq('year', 2020))
+  .first()
+  .select('trees');
+
+
+var trees2025 = annualCollection
+  .filter(ee.Filter.eq('year', 2025))
+  .first()
+  .select('trees');
+
+
+var treeVis = {
+  min: 0,
+  max: 1,
+  palette: [
+    'white',
+    'lightgreen',
+    'darkgreen'
+  ]
+};
+
+
+Map.addLayer(
+  trees2016,
+  treeVis,
+  'Tree Probability 2016',
+  false
+);
+
+
+Map.addLayer(
+  trees2020,
+  treeVis,
+  'Tree Probability 2020',
+  false
+);
+
+
+Map.addLayer(
+  trees2025,
+  treeVis,
+  'Tree Probability 2025',
+  true
+);
+
+
+// ------------------------------------------------------------
+// 8. CREATE A SAMPLE POINT
+// ------------------------------------------------------------
+
+// Click / edit this point later if needed.
+// For now, use the centroid as a learning point.
+
+var samplePoint = aoi.centroid();
+
+Map.addLayer(
+  samplePoint,
+  {color: 'red'},
+  'Sample Point'
+);
+
+
+// ------------------------------------------------------------
+// 9. TREE PROBABILITY TIME-SERIES CHART
+// ------------------------------------------------------------
+
+var treeChart = ui.Chart.image.series({
+
+  imageCollection:
+    annualCollection.select('trees'),
+
+  region:
+    samplePoint,
+
+  reducer:
+    ee.Reducer.mean(),
+
+  scale:
+    10,
+
+  xProperty:
+    'system:time_start'
+
+})
+.setOptions({
+
+  title:
+    'Annual Tree Probability — Sample Point',
+
+  hAxis: {
+    title: 'Year'
+  },
+
+  vAxis: {
+    title: 'Tree Probability',
+    viewWindow: {
+      min: 0,
+      max: 1
+    }
+  },
+
+  lineWidth: 2,
+
+  pointSize: 5
+
+});
+
+
+print(treeChart);
+
+
+// ------------------------------------------------------------
+// 10. COMPARE TREE VS VEGETATION
+// ------------------------------------------------------------
+
+var treeVegetationChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      annualCollection.select([
+        'trees',
+        'vegetation'
+      ]),
+
+    region:
+      samplePoint,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+  .setOptions({
+
+    title:
+      'Tree vs Non-tree Vegetation Probability',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+      title: 'Probability',
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+    },
+
+    lineWidth: 2,
+
+    pointSize: 5
+
+  });
+
+
+print(treeVegetationChart);
