@@ -137,7 +137,7 @@ var annualImageCounts = ee.FeatureCollection(
 
 );
 
-print('Dynamic World observation counts by year:',annualImageCounts);
+print('*Dynamic World observation counts by year:',annualImageCounts);
 
 
 // ------------------------------------------------------------
@@ -313,3 +313,6 @@ var treeVegetationChart =
 
 
 print(treeVegetationChart);
+
+
+
