@@ -30,7 +30,7 @@ var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
 //  3. CREATE functional probability groups
 // -------------------------------------------------------------
 
-var prepocessDW = function(image) {
+var preprocessDw = function(image) {
   
   // Individual probabilities (generate single band image naming with band name)
   var trees = image.select('trees');
@@ -60,7 +60,7 @@ var prepocessDW = function(image) {
   
 }
 
-var dw6 =dw.map(prepocessDW);
+var dw6 =dw.map(preprocessDw);
 
 print('Six functional probability bands: ', dw6.first());
 
@@ -69,11 +69,10 @@ print('Six functional probability bands: ', dw6.first());
 // 4. CHECK WHETHER PROBABILITIES STILL SUM TO ~1
 // ------------------------------------------------------------
 
-var imageList = dw6.toList(dw.size());
-var an_image = ee.Image(imageList.get(9));
+var firstImage = ee.Image(dw6.first());
 
 
-var probabilitySum = an_image
+var probabilitySum = firstImage
   .reduce(ee.Reducer.sum())
   .rename('probability_sum');
 
