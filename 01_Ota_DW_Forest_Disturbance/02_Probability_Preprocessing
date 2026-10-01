@@ -21,7 +21,7 @@ Map.centerObject(aoi, 11);
 // 2. LOAD DYNAMIC WORLD
 // ------------------------------------------------------------
 
-var dw = ee.ImageCollection('GOOGLE/DYNAMICWORD/V1')
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
   .filterBounds(aoi)
   .filterDate('2016-01-01', '2026-01-01')
   .filter(ee.Filter.calendarRange(11,12,'month'));
@@ -65,14 +65,27 @@ var dw6 =dw.map(prepocessDW);
 print('Six functional probability bands: ', dw6.first());
 
 
+// ------------------------------------------------------------
+// 4. CHECK WHETHER PROBABILITIES STILL SUM TO ~1
+// ------------------------------------------------------------
+
+var imageList = dw6.toList(dw.size());
+var an_image = ee.Image(imageList.get(9));
 
 
+var probabilitySum = an_image
+  .reduce(ee.Reducer.sum())
+  .rename('probability_sum');
 
 
+Map.addLayer( probabilitySum.clip(aoi), {min: 0.95, max: 1.05}, 'Probability Sum Check', false);
 
 
+// ------------------------------------------------------------
+// 5. INSPECT 2025 COMPOSITES
+// ------------------------------------------------------------
 
-
+var dw2025 = dw6.filterDate('2025-11-01', '2026-01-01');
 
 
 
