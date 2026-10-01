@@ -120,10 +120,7 @@ var annualCollection = ee.ImageCollection.fromImages(
 );
 
 
-print(
-  '1. Annual probability collection:',
-  annualCollection
-);
+print('1. Annual probability collection:',annualCollection);
 
 
 // ------------------------------------------------------------
