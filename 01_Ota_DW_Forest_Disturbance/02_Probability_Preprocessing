@@ -87,11 +87,25 @@ Map.addLayer( probabilitySum.clip(aoi), {min: 0.95, max: 1.05}, 'Probability Sum
 
 var dw2025 = dw6.filterDate('2025-11-01', '2026-01-01');
 
+// For learning/inspection only
+var trees2025 = dw2025
+  .select('trees')
+  .median()
+  .clip(aoi);
+  
+var vegetation2025 = dw2025
+  .select('vegetation')
+  .median()
+  .clip(aoi);
+  
+  
+// ------------------------------------------------------------
+// 6. VISUALIZE
+// ------------------------------------------------------------
 
+Map.addLayer(trees2025, {min: 0, max: 1, palette: ['white', 'lightgreen', 'darkgreen']}, 'Trees Probability 2025');
 
-
-
-
+Map.addLayer(vegetation2025, {min: 0, max: 1, palette: ['white', 'lightgreen', 'darkgreen']}, 'Vegetation Probability 2025');
 
 
 
