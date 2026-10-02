@@ -13,7 +13,7 @@
 var wdpa = ee.FeatureCollection('WCMC/WDPA/current/polygons');
 
 var madhupur = wdpa.filter(
-  ee.Filter.eq('SITE_ID', 4481)
+  ee.Filter.eq('SITE_ID', 9281) // Teknaf
 );
 
 var aoi = madhupur.geometry();
@@ -313,6 +313,57 @@ var treeVegetationChart =
 
 
 print(treeVegetationChart);
+
+// ------------------------------------------------------------
+// 11. PRINT YEAR-BY-YEAR VALUES AT SAMPLE POINT
+// ------------------------------------------------------------
+
+var sampleSeries = ee.FeatureCollection(
+
+  annualCollection.map(function(image) {
+
+    var values = image.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: samplePoint,
+      scale: 10,
+      bestEffort: true
+    });
+
+    return ee.Feature(null, {
+      year: image.get('year'),
+      trees: values.get('trees'),
+      vegetation: values.get('vegetation'),
+      water: values.get('water'),
+      built: values.get('built'),
+      bare: values.get('bare'),
+      snow_and_ice: values.get('snow_and_ice'),
+      image_count: image.get('image_count')
+    });
+
+  })
+
+);
+
+print('Sample-point annual probability values:', sampleSeries);
+
+var yearList = sampleSeries.aggregate_array('year');
+var treesList = sampleSeries.aggregate_array('trees');
+
+print('Years:', yearList);
+print('Trees probabilities:', treesList);
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
