@@ -1,0 +1,53 @@
+// A. Annual 9-band median collection
+var annualDW9 = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+
+    year = ee.Number(year);
+
+    var start = ee.Date.fromYMD(year, 11, 1);
+    var end = ee.Date.fromYMD(year.add(1), 1, 1);
+
+    var yearly = dw.filterDate(start, end);
+
+    var annual = yearly
+      .median()
+      .clip(aoi);
+
+    return annual
+      .set('year', year)
+      .set(
+        'system:time_start',
+        ee.Date.fromYMD(year, 12, 1).millis()
+      );
+  })
+);
+
+
+// B. Coastal-transition chart
+var coastalChart = ui.Chart.image.series({
+
+  imageCollection: annualDW9.select([
+    'crops',
+    'flooded_vegetation',
+    'water',
+    'bare'
+  ]),
+
+  region: samplePoint,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+
+})
+.setOptions({
+  title: 'Annual Coastal Land-cover Probabilities — Nijhum Dwip',
+  hAxis: {title: 'Year'},
+  vAxis: {
+    title: 'Probability',
+    viewWindow: {min: 0, max: 1}
+  },
+  lineWidth: 2,
+  pointSize: 5
+});
+
+print(coastalChart);
