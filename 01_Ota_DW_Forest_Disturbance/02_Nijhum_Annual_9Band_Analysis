@@ -1,53 +1,995 @@
-// A. Annual 9-band median collection
+// ============================================================
+// PROJECT 01 — NIJHUM DWIP ADAPTATION
+// FILE: 02_Nijhum_Annual_9Band_Analysis.js
+//
+// Annual Dynamic World 9-band Probability Analysis
+// Study area: Nijhum Dwip National Park, Bangladesh
+// SITE_ID: 317318
+// Study period: 2016–2025
+// Seasonal window: November–December
+//
+// Purpose:
+// 1. Examine annual land-cover probability dynamics.
+// 2. Keep flooded vegetation separate from other vegetation.
+// 3. Explore coastal transitions among crops, flooded vegetation,
+//    water, bare land, and trees.
+// 4. Identify tree-dominated areas for later Ota-style analysis.
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 1. LOAD NIJHUM DWIP AOI
+// ------------------------------------------------------------
+
+var wdpa = ee.FeatureCollection(
+  'WCMC/WDPA/current/polygons'
+);
+
+var nijhum = wdpa.filter(
+  ee.Filter.eq('SITE_ID', 317318)
+);
+
+
+// Basic verification
+print(
+  'Nijhum Dwip feature:',
+  nijhum
+);
+
+print(
+  'Number of matched features:',
+  nijhum.size()
+);
+
+print(
+  'Protected-area name:',
+  nijhum.first().get('NAME')
+);
+
+print(
+  'SITE_ID:',
+  nijhum.first().get('SITE_ID')
+);
+
+print(
+  'GIS area:',
+  nijhum.first().get('GIS_AREA')
+);
+
+
+var aoi = nijhum.geometry();
+
+
+// Calculate geometry area
+print(
+  'Calculated AOI area (km²):',
+  aoi.area().divide(1e6)
+);
+
+
+Map.centerObject(
+  aoi,
+  11
+);
+
+
+Map.addLayer(
+  nijhum,
+  {
+    color: 'yellow'
+  },
+  'Nijhum Dwip Boundary',
+  true
+);
+
+
+// ------------------------------------------------------------
+// 2. LOAD ORIGINAL DYNAMIC WORLD
+// ------------------------------------------------------------
+
+var dw = ee.ImageCollection(
+    'GOOGLE/DYNAMICWORLD/V1'
+  )
+
+  .filterBounds(aoi)
+
+  .filterDate(
+    '2016-01-01',
+    '2026-01-01'
+  )
+
+  // Keep November–December only
+  .filter(
+    ee.Filter.calendarRange(
+      11,
+      12,
+      'month'
+    )
+  );
+
+
+print(
+  'Dynamic World Nov-Dec images:',
+  dw.size()
+);
+
+
+// ------------------------------------------------------------
+// 3. SELECT ORIGINAL 9 PROBABILITY BANDS
+// ------------------------------------------------------------
+
+var probabilityBands = [
+
+  'water',
+
+  'trees',
+
+  'grass',
+
+  'flooded_vegetation',
+
+  'crops',
+
+  'shrub_and_scrub',
+
+  'built',
+
+  'bare',
+
+  'snow_and_ice'
+
+];
+
+
+var dw9 = dw.select(
+  probabilityBands
+);
+
+
+print(
+  'Dynamic World 9-band collection:',
+  dw9
+);
+
+
+// ------------------------------------------------------------
+// 4. CREATE YEAR LIST
+// ------------------------------------------------------------
+
+var years = ee.List.sequence(
+  2016,
+  2025
+);
+
+
+print(
+  'Study years:',
+  years
+);
+
+
+// ------------------------------------------------------------
+// 5. CREATE ONE ANNUAL 9-BAND IMAGE PER YEAR
+// ------------------------------------------------------------
+
 var annualDW9 = ee.ImageCollection.fromImages(
+
   years.map(function(year) {
 
     year = ee.Number(year);
 
-    var start = ee.Date.fromYMD(year, 11, 1);
-    var end = ee.Date.fromYMD(year.add(1), 1, 1);
 
-    var yearly = dw.filterDate(start, end);
+    var start = ee.Date.fromYMD(
+      year,
+      11,
+      1
+    );
 
-    var annual = yearly
+
+    var end = ee.Date.fromYMD(
+      year.add(1),
+      1,
+      1
+    );
+
+
+    var yearlyDW = dw9
+      .filterDate(
+        start,
+        end
+      );
+
+
+    // Diagnostic annual composite:
+    // Calculate the median probability
+    // independently for each band
+    // during November–December.
+
+    var annualImage = yearlyDW
       .median()
       .clip(aoi);
 
-    return annual
-      .set('year', year)
+
+    return annualImage
+
+      .set(
+        'year',
+        year
+      )
+
       .set(
         'system:time_start',
-        ee.Date.fromYMD(year, 12, 1).millis()
+        ee.Date.fromYMD(
+          year,
+          12,
+          1
+        ).millis()
+      )
+
+      .set(
+        'image_count',
+        yearlyDW.size()
       );
+
   })
+
 );
 
 
-// B. Coastal-transition chart
-var coastalChart = ui.Chart.image.series({
+print(
+  'Annual 9-band collection:',
+  annualDW9
+);
 
-  imageCollection: annualDW9.select([
-    'crops',
-    'flooded_vegetation',
-    'water',
-    'bare'
-  ]),
 
-  region: samplePoint,
-  reducer: ee.Reducer.mean(),
-  scale: 10,
-  xProperty: 'system:time_start'
+// ------------------------------------------------------------
+// 6. CHECK NUMBER OF SOURCE IMAGES PER YEAR
+// ------------------------------------------------------------
 
-})
-.setOptions({
-  title: 'Annual Coastal Land-cover Probabilities — Nijhum Dwip',
-  hAxis: {title: 'Year'},
-  vAxis: {
-    title: 'Probability',
-    viewWindow: {min: 0, max: 1}
+var annualImageCounts =
+  ee.FeatureCollection(
+
+    annualDW9.map(function(image) {
+
+      return ee.Feature(
+        null,
+        {
+
+          year:
+            image.get('year'),
+
+          image_count:
+            image.get('image_count')
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'Dynamic World image count by year:',
+  annualImageCounts
+);
+
+
+// ------------------------------------------------------------
+// 7. CREATE INITIAL SAMPLE POINT
+// ------------------------------------------------------------
+//
+// IMPORTANT:
+// This centroid point is ONLY for exploratory analysis.
+// Later we will select specific coastal-transition
+// and tree-dominated locations.
+//
+
+var samplePoint = aoi.centroid();
+
+
+Map.addLayer(
+  samplePoint,
+  {
+    color: 'red'
   },
-  lineWidth: 2,
-  pointSize: 5
-});
+  'Initial Sample Point — Centroid',
+  true
+);
 
-print(coastalChart);
+
+// ------------------------------------------------------------
+// 8. COASTAL-TRANSITION PROBABILITY CHART
+// ------------------------------------------------------------
+//
+// These classes are especially relevant to Nijhum Dwip.
+//
+
+var coastalChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      annualDW9.select([
+
+        'crops',
+
+        'flooded_vegetation',
+
+        'water',
+
+        'bare'
+
+      ]),
+
+    region:
+      samplePoint,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+
+
+  .setOptions({
+
+    title:
+      'Annual Coastal Land-cover Probabilities — Nijhum Dwip',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title: 'Probability',
+
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      5
+
+  });
+
+
+print(
+  coastalChart
+);
+
+
+// ------------------------------------------------------------
+// 9. TREE PROBABILITY CHART
+// ------------------------------------------------------------
+
+var treeChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      annualDW9.select(
+        'trees'
+      ),
+
+    region:
+      samplePoint,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+
+
+  .setOptions({
+
+    title:
+      'Annual Tree Probability — Nijhum Dwip Sample Point',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Tree Probability',
+
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      5
+
+  });
+
+
+print(
+  treeChart
+);
+
+
+// ------------------------------------------------------------
+// 10. ALL IMPORTANT LAND-COVER CLASSES
+// ------------------------------------------------------------
+//
+// Snow/ice is excluded from this chart
+// because it is not meaningful for Nijhum Dwip.
+//
+
+var allClassChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      annualDW9.select([
+
+        'trees',
+
+        'grass',
+
+        'flooded_vegetation',
+
+        'crops',
+
+        'shrub_and_scrub',
+
+        'water',
+
+        'bare',
+
+        'built'
+
+      ]),
+
+    region:
+      samplePoint,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+
+
+  .setOptions({
+
+    title:
+      'Annual Dynamic World Probabilities — Nijhum Dwip',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Probability',
+
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      4
+
+  });
+
+
+print(
+  allClassChart
+);
+
+
+// ------------------------------------------------------------
+// 11. PRINT ANNUAL VALUES AT SAMPLE POINT
+// ------------------------------------------------------------
+
+var sampleSeries =
+  ee.FeatureCollection(
+
+    annualDW9.map(function(image) {
+
+
+      var values =
+        image.reduceRegion({
+
+          reducer:
+            ee.Reducer.mean(),
+
+          geometry:
+            samplePoint,
+
+          scale:
+            10,
+
+          bestEffort:
+            true
+
+        });
+
+
+      return ee.Feature(
+        null,
+        {
+
+          year:
+            image.get('year'),
+
+          trees:
+            values.get('trees'),
+
+          crops:
+            values.get('crops'),
+
+          flooded_vegetation:
+            values.get(
+              'flooded_vegetation'
+            ),
+
+          water:
+            values.get('water'),
+
+          bare:
+            values.get('bare'),
+
+          grass:
+            values.get('grass'),
+
+          shrub_and_scrub:
+            values.get(
+              'shrub_and_scrub'
+            ),
+
+          built:
+            values.get('built'),
+
+          image_count:
+            image.get(
+              'image_count'
+            )
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'Sample-point annual probabilities:',
+  sampleSeries
+);
+
+
+// ------------------------------------------------------------
+// 12. PRINT SELECTED VALUES AS LISTS
+// ------------------------------------------------------------
+
+print(
+  'Years:',
+  sampleSeries.aggregate_array(
+    'year'
+  )
+);
+
+
+print(
+  'Crops:',
+  sampleSeries.aggregate_array(
+    'crops'
+  )
+);
+
+
+print(
+  'Flooded vegetation:',
+  sampleSeries.aggregate_array(
+    'flooded_vegetation'
+  )
+);
+
+
+print(
+  'Water:',
+  sampleSeries.aggregate_array(
+    'water'
+  )
+);
+
+
+print(
+  'Bare:',
+  sampleSeries.aggregate_array(
+    'bare'
+  )
+);
+
+
+print(
+  'Trees:',
+  sampleSeries.aggregate_array(
+    'trees'
+  )
+);
+
+
+// ------------------------------------------------------------
+// 13. VISUALIZE TREE PROBABILITY — 2017
+// ------------------------------------------------------------
+
+var image2017 = ee.Image(
+
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2017
+      )
+    )
+    .first()
+
+);
+
+
+var trees2017 =
+  image2017.select(
+    'trees'
+  );
+
+
+var treeVis = {
+
+  min:
+    0,
+
+  max:
+    1,
+
+  palette: [
+    'white',
+    'lightgreen',
+    'darkgreen'
+  ]
+
+};
+
+
+Map.addLayer(
+  trees2017,
+  treeVis,
+  'Tree Probability 2017',
+  false
+);
+
+
+// ------------------------------------------------------------
+// 14. IDENTIFY HIGH TREE-PROBABILITY PIXELS
+// ------------------------------------------------------------
+//
+// Exploratory threshold only.
+//
+// trees > 0.60
+//
+// This does NOT automatically mean
+// 60% tree canopy cover.
+//
+// It means Dynamic World assigned
+// a tree-class probability > 0.60.
+//
+
+var strongTree2017 =
+  trees2017.gt(
+    0.60
+  );
+
+
+Map.addLayer(
+
+  strongTree2017
+    .selfMask(),
+
+  {
+    palette: [
+      'darkgreen'
+    ]
+  },
+
+  'High Tree Probability (>0.60) — 2017',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 15. VISUALIZE COASTAL CLASSES — 2021
+// ------------------------------------------------------------
+
+var image2021 = ee.Image(
+
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2021
+      )
+    )
+    .first()
+
+);
+
+
+Map.addLayer(
+
+  image2021
+    .select(
+      'flooded_vegetation'
+    ),
+
+  {
+    min: 0,
+    max: 1,
+    palette: [
+      'white',
+      'lightgreen',
+      'darkgreen'
+    ]
+  },
+
+  'Flooded Vegetation Probability 2021',
+
+  false
+
+);
+
+
+Map.addLayer(
+
+  image2021
+    .select(
+      'water'
+    ),
+
+  {
+    min: 0,
+    max: 1,
+    palette: [
+      'white',
+      'lightblue',
+      'blue'
+    ]
+  },
+
+  'Water Probability 2021',
+
+  false
+
+);
+
+
+Map.addLayer(
+
+  image2021
+    .select(
+      'bare'
+    ),
+
+  {
+    min: 0,
+    max: 1,
+    palette: [
+      'white',
+      'yellow',
+      'brown'
+    ]
+  },
+
+  'Bare Probability 2021',
+
+  false
+
+);
+
+
+// ------------------------------------------------------------
+// 16. 2020 -> 2021 PROBABILITY DIFFERENCE
+// ------------------------------------------------------------
+
+var image2020 = ee.Image(
+
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2020
+      )
+    )
+    .first()
+
+);
+
+
+// Flooded vegetation change
+var floodedChange2020_2021 =
+  image2021
+    .select(
+      'flooded_vegetation'
+    )
+    .subtract(
+      image2020.select(
+        'flooded_vegetation'
+      )
+    )
+    .rename(
+      'flooded_change'
+    );
+
+
+Map.addLayer(
+
+  floodedChange2020_2021,
+
+  {
+
+    min:
+      -0.5,
+
+    max:
+      0.5,
+
+    palette: [
+      'red',
+      'white',
+      'green'
+    ]
+
+  },
+
+  'Flooded Vegetation Change 2020-2021',
+
+  false
+
+);
+
+
+// Water change
+var waterChange2020_2021 =
+  image2021
+    .select(
+      'water'
+    )
+    .subtract(
+      image2020.select(
+        'water'
+      )
+    )
+    .rename(
+      'water_change'
+    );
+
+
+Map.addLayer(
+
+  waterChange2020_2021,
+
+  {
+
+    min:
+      -0.5,
+
+    max:
+      0.5,
+
+    palette: [
+      'red',
+      'white',
+      'blue'
+    ]
+
+  },
+
+  'Water Change 2020-2021',
+
+  false
+
+);
+
+
+// Bare-land change
+var bareChange2020_2021 =
+  image2021
+    .select(
+      'bare'
+    )
+    .subtract(
+      image2020.select(
+        'bare'
+      )
+    )
+    .rename(
+      'bare_change'
+    );
+
+
+Map.addLayer(
+
+  bareChange2020_2021,
+
+  {
+
+    min:
+      -0.5,
+
+    max:
+      0.5,
+
+    palette: [
+      'green',
+      'white',
+      'brown'
+    ]
+
+  },
+
+  'Bare Change 2020-2021',
+
+  false
+
+);
+
+
+// ------------------------------------------------------------
+// 17. IMPORTANT NOTE
+// ------------------------------------------------------------
+//
+// annualDW9 uses independent band-wise medians.
+//
+// Therefore:
+//
+// median(water) +
+// median(trees) +
+// median(crops) + ...
+//
+// is NOT guaranteed to equal exactly 1.
+//
+// These annual composites are currently being used
+// for exploratory / diagnostic analysis.
+//
+// Persistent transitions will be investigated later
+// using spatial and temporal trajectory analysis.
+// ------------------------------------------------------------
