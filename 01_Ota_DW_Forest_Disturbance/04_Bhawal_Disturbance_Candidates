@@ -1,0 +1,315 @@
+// ============================================================
+// PROJECT 01 — STEP 04
+// Bhawal Disturbance Candidates
+// Study area: Bhawal National Park, Bangladesh
+// Diagnostic screening stage
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 1. LOAD AOI
+// ------------------------------------------------------------
+
+var wdpa = ee.FeatureCollection('WCMC/WDPA/current/polygons');
+
+var bhawal = wdpa.filter(
+  ee.Filter.eq('SITE_ID', 4479)
+);
+
+var aoi = bhawal.geometry();
+
+Map.centerObject(aoi, 11);
+
+
+// ------------------------------------------------------------
+// 2. LOAD DYNAMIC WORLD
+// ------------------------------------------------------------
+
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+  .filterBounds(aoi)
+  .filterDate('2016-01-01', '2026-01-01')
+  .filter(
+    ee.Filter.calendarRange(11, 12, 'month')
+  );
+
+
+// ------------------------------------------------------------
+// 3. PREPROCESS 9 BANDS -> 6 FUNCTIONAL GROUPS
+// ------------------------------------------------------------
+
+var preprocessDW = function(image) {
+
+  var trees = image.select('trees');
+  var water = image.select('water');
+  var built = image.select('built');
+  var bare = image.select('bare');
+  var snow = image.select('snow_and_ice');
+
+  var vegetation = image
+    .select([
+      'grass',
+      'flooded_vegetation',
+      'crops',
+      'shrub_and_scrub'
+    ])
+    .reduce(ee.Reducer.sum())
+    .rename('vegetation');
+
+  return ee.Image.cat([
+      trees.rename('trees'),
+      water.rename('water'),
+      built.rename('built'),
+      bare.rename('bare'),
+      snow.rename('snow_and_ice'),
+      vegetation
+    ])
+    .copyProperties(
+      image,
+      ['system:time_start']
+    );
+};
+
+
+var dw6 = dw.map(preprocessDW);
+
+
+// ------------------------------------------------------------
+// 4. CREATE ANNUAL NOV–DEC COMPOSITES
+// Diagnostic median version
+// ------------------------------------------------------------
+
+var years = ee.List.sequence(2016, 2025);
+
+var annualCollection = ee.ImageCollection.fromImages(
+
+  years.map(function(year) {
+
+    year = ee.Number(year);
+
+    var start = ee.Date.fromYMD(year, 11, 1);
+    var end = ee.Date.fromYMD(year.add(1), 1, 1);
+
+    var yearlyDW = dw6.filterDate(start, end);
+
+    var annualImage = yearlyDW
+      .median()
+      .clip(aoi);
+
+    return annualImage
+      .set('year', year)
+      .set(
+        'system:time_start',
+        ee.Date.fromYMD(year, 12, 1).millis()
+      );
+
+  })
+
+);
+
+
+// ------------------------------------------------------------
+// 5. GET TREE PROBABILITY FOR SELECTED YEARS
+// ------------------------------------------------------------
+
+var trees2016 = ee.Image(
+  annualCollection
+    .filter(ee.Filter.eq('year', 2016))
+    .first()
+).select('trees');
+
+
+var trees2018 = ee.Image(
+  annualCollection
+    .filter(ee.Filter.eq('year', 2018))
+    .first()
+).select('trees');
+
+
+var trees2024 = ee.Image(
+  annualCollection
+    .filter(ee.Filter.eq('year', 2024))
+    .first()
+).select('trees');
+
+
+var trees2025 = ee.Image(
+  annualCollection
+    .filter(ee.Filter.eq('year', 2025))
+    .first()
+).select('trees');
+
+
+// ------------------------------------------------------------
+// 6. TREE-PROBABILITY CHANGE
+// ------------------------------------------------------------
+
+// Long-term change
+var delta2016_2025 = trees2025
+  .subtract(trees2016)
+  .rename('delta_trees_2016_2025');
+
+
+// Short-term change around the large dip seen in 2024
+var delta2023_2024 = ee.Image(
+  annualCollection
+    .filter(ee.Filter.eq('year', 2024))
+    .first()
+)
+.select('trees')
+.subtract(
+  ee.Image(
+    annualCollection
+      .filter(ee.Filter.eq('year', 2023))
+      .first()
+  )
+  .select('trees')
+)
+.rename('delta_trees_2023_2024');
+
+
+// ------------------------------------------------------------
+// 7. VISUALIZE CHANGE MAPS
+// ------------------------------------------------------------
+
+var changeVis = {
+  min: -0.4,
+  max: 0.4,
+  palette: [
+    'red',
+    'orange',
+    'white',
+    'lightgreen',
+    'darkgreen'
+  ]
+};
+
+
+Map.addLayer(
+  delta2016_2025,
+  changeVis,
+  'Δ Trees Probability: 2016–2025',
+  true
+);
+
+
+Map.addLayer(
+  delta2023_2024,
+  changeVis,
+  'Δ Trees Probability: 2023–2024',
+  false
+);
+
+
+// ------------------------------------------------------------
+// 8. CREATE SIMPLE DECLINE MASK
+// Diagnostic threshold only
+// ------------------------------------------------------------
+
+// Candidate decline:
+// tree probability decreased by at least 0.15
+
+var declineMask = delta2016_2025
+  .lte(-0.15)
+  .selfMask();
+
+
+Map.addLayer(
+  declineMask,
+  {palette: ['red']},
+  'Candidate decline >= 0.15',
+  false
+);
+
+
+// ------------------------------------------------------------
+// 9. CALCULATE AREA OF CANDIDATE DECLINE
+// ------------------------------------------------------------
+
+var declineAreaImage = declineMask
+  .multiply(ee.Image.pixelArea())
+  .divide(10000)
+  .rename('area_ha');
+
+
+var declineAreaHa = declineAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+
+print(
+  'Candidate decline area (ha), threshold <= -0.15:',
+  declineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 10. PARK-WIDE MEAN TREE PROBABILITY BY YEAR
+// ------------------------------------------------------------
+
+var parkMeanSeries = ee.FeatureCollection(
+
+  annualCollection.map(function(image) {
+
+    var meanValue = image
+      .select('trees')
+      .reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: aoi,
+        scale: 10,
+        maxPixels: 1e9
+      })
+      .get('trees');
+
+    return ee.Feature(null, {
+      year: image.get('year'),
+      mean_tree_probability: meanValue
+    });
+
+  })
+
+);
+
+
+print(
+  'Park-wide mean annual tree probability:',
+  parkMeanSeries
+);
+
+
+// ------------------------------------------------------------
+// 11. PARK-WIDE MEAN CHART
+// ------------------------------------------------------------
+
+var parkMeanChart = ui.Chart.feature.byFeature(
+  parkMeanSeries,
+  'year',
+  'mean_tree_probability'
+)
+.setOptions({
+
+  title:
+    'Mean Annual Tree Probability — Bhawal National Park',
+
+  hAxis: {
+    title: 'Year'
+  },
+
+  vAxis: {
+    title: 'Mean Tree Probability',
+    viewWindow: {
+      min: 0,
+      max: 1
+    }
+  },
+
+  lineWidth: 2,
+
+  pointSize: 5
+
+});
+
+
+print(parkMeanChart);
