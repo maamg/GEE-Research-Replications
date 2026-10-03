@@ -3581,7 +3581,478 @@ print(
   firstDeclineChart
 );
 
+// ============================================================
+// PART P
+// ONSET-TO-MAXIMUM DECLINE LAG
+// ============================================================
+//
+// PURPOSE:
+//
+// Determine whether persistent tree decline was:
+//
+// abrupt,
+// rapid,
+// progressive,
+// or prolonged.
+//
+// lag_years =
+// maxDropYear - firstDeclineYear
+//
+// ------------------------------------------------------------
 
+
+// ------------------------------------------------------------
+// 70. CALCULATE LAG IMAGE
+// ------------------------------------------------------------
+
+var declineLagYears =
+  maxDropYear
+
+    .subtract(
+      firstDeclineYear
+    )
+
+    .rename(
+      'lag_years'
+    )
+
+    .toInt16()
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+Map.addLayer(
+
+  declineLagYears,
+
+  {
+    min: 0,
+    max: 7,
+
+    palette: [
+      'red',
+      'orange',
+      'yellow',
+      'lightgreen',
+      'green',
+      'cyan',
+      'blue',
+      'purple'
+    ]
+  },
+
+  'Onset-to-Maximum Decline Lag',
+
+  true
+);
+
+
+// ------------------------------------------------------------
+// 71. CREATE LAG LIST
+// ------------------------------------------------------------
+
+var lagValues =
+  ee.List.sequence(
+    0,
+    7
+  );
+
+
+// ------------------------------------------------------------
+// 72. AREA SUMMARY BY LAG
+// ------------------------------------------------------------
+
+var lagSummary =
+  ee.FeatureCollection(
+
+    lagValues.map(function(lag) {
+
+      lag = ee.Number(lag);
+
+
+      var lagMask =
+        declineLagYears.eq(lag);
+
+
+      var areaDict =
+        pixelAreaHa
+
+          .updateMask(
+            lagMask
+          )
+
+          .reduceRegion({
+
+            reducer:
+              ee.Reducer.sum(),
+
+            geometry:
+              aoi,
+
+            scale:
+              10,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              4
+
+          });
+
+
+      var areaHa =
+        ee.Number(
+
+          ee.Algorithms.If(
+
+            areaDict.contains(
+              'area_ha'
+            ),
+
+            areaDict.get(
+              'area_ha'
+            ),
+
+            0
+
+          )
+
+        );
+
+
+      var percentPersistent =
+        areaHa
+
+          .divide(
+            persistentDeclineAreaHa
+          )
+
+          .multiply(100);
+
+
+      return ee.Feature(
+        null,
+        {
+
+          lag_years:
+            lag,
+
+          area_ha:
+            areaHa,
+
+          pct_of_persistent_area:
+            percentPersistent
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'ONSET-TO-MAXIMUM LAG SUMMARY:',
+  lagSummary
+);
+
+
+// ------------------------------------------------------------
+// 73. QC CHECK
+// ------------------------------------------------------------
+
+var lagAreaSum =
+  ee.Number(
+    lagSummary
+      .aggregate_sum(
+        'area_ha'
+      )
+  );
+
+
+print(
+  'Sum of lag-class areas (ha):',
+  lagAreaSum
+);
+
+
+print(
+  'Persistent candidate area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 74. BAR CHART
+// ------------------------------------------------------------
+
+var lagChart =
+  ui.Chart.feature.byFeature(
+
+    lagSummary,
+
+    'lag_years',
+
+    [
+      'area_ha'
+    ]
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Persistent Tree-Decline Area by Onset-to-Maximum Lag',
+
+    hAxis: {
+      title:
+        'Lag (years)'
+    },
+
+    vAxis: {
+      title:
+        'Area (ha)'
+    },
+
+    legend: {
+      position:
+        'none'
+    }
+
+  });
+
+
+print(
+  lagChart
+);
+
+
+// ============================================================
+// PART Q
+// OPERATIONAL DISTURBANCE-PROCESS CLASSES
+// ============================================================
+//
+// 0 years   = Abrupt
+// 1 year    = Rapid
+// 2–3 years = Progressive
+// >=4 years = Prolonged progressive
+//
+// These are analytical categories,
+// NOT validated ecological process classes.
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 75. CREATE PROCESS-CLASS IMAGE
+// ------------------------------------------------------------
+//
+// Code:
+//
+// 1 = Abrupt
+// 2 = Rapid
+// 3 = Progressive
+// 4 = Prolonged progressive
+//
+// ------------------------------------------------------------
+
+var processClass =
+  ee.Image(0)
+
+    .where(
+      declineLagYears.eq(0),
+      1
+    )
+
+    .where(
+      declineLagYears.eq(1),
+      2
+    )
+
+    .where(
+      declineLagYears.gte(2)
+        .and(
+          declineLagYears.lte(3)
+        ),
+      3
+    )
+
+    .where(
+      declineLagYears.gte(4),
+      4
+    )
+
+    .rename(
+      'process_class'
+    )
+
+    .updateMask(
+      persistentCandidate
+    )
+
+    .toInt8();
+
+
+Map.addLayer(
+
+  processClass,
+
+  {
+    min: 1,
+    max: 4,
+
+    palette: [
+      'red',      // abrupt
+      'orange',   // rapid
+      'green',    // progressive
+      'blue'      // prolonged progressive
+    ]
+  },
+
+  'Decline Process Class',
+
+  false
+);
+
+
+// ------------------------------------------------------------
+// 76. PROCESS CLASS SUMMARY
+// ------------------------------------------------------------
+
+var processCodes =
+  ee.List.sequence(
+    1,
+    4
+  );
+
+
+var processSummary =
+  ee.FeatureCollection(
+
+    processCodes.map(function(code) {
+
+      code =
+        ee.Number(code);
+
+
+      var classMask =
+        processClass.eq(
+          code
+        );
+
+
+      var areaDict =
+        pixelAreaHa
+
+          .updateMask(
+            classMask
+          )
+
+          .reduceRegion({
+
+            reducer:
+              ee.Reducer.sum(),
+
+            geometry:
+              aoi,
+
+            scale:
+              10,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              4
+
+          });
+
+
+      var areaHa =
+        ee.Number(
+
+          ee.Algorithms.If(
+
+            areaDict.contains(
+              'area_ha'
+            ),
+
+            areaDict.get(
+              'area_ha'
+            ),
+
+            0
+
+          )
+
+        );
+
+
+      var percentage =
+        areaHa
+
+          .divide(
+            persistentDeclineAreaHa
+          )
+
+          .multiply(100);
+
+
+      var label =
+        ee.Dictionary({
+
+          '1':
+            'Abrupt',
+
+          '2':
+            'Rapid',
+
+          '3':
+            'Progressive',
+
+          '4':
+            'Prolonged progressive'
+
+        })
+        .get(
+          code.format()
+        );
+
+
+      return ee.Feature(
+        null,
+        {
+
+          process_code:
+            code,
+
+          process:
+            label,
+
+          area_ha:
+            areaHa,
+
+          pct_of_persistent_area:
+            percentage
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'DECLINE PROCESS SUMMARY:',
+  processSummary
+);
 
 
 
