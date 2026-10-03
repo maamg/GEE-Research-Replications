@@ -2749,3 +2749,563 @@ print(
 // lower vegetation vigor and wetter surface conditions.
 //
 // ------------------------------------------------------------
+
+// ============================================================
+// PART M
+// AREA QUANTIFICATION OF TREE-DECLINE CANDIDATES
+// ============================================================
+//
+// IMPORTANT:
+//
+// These areas represent pixels satisfying our
+// probability-based disturbance criteria.
+//
+// They should currently be described as:
+//
+// "candidate tree-decline area"
+//
+// or
+//
+// "persistent tree-decline candidate area"
+//
+// NOT yet as confirmed deforestation area.
+//
+// ------------------------------------------------------------
+
+
+// ------------------------------------------------------------
+// 49. CREATE PIXEL-AREA IMAGE IN HECTARES
+// ------------------------------------------------------------
+//
+// ee.Image.pixelArea() gives area in square metres.
+//
+// 1 hectare = 10,000 m²
+//
+// ------------------------------------------------------------
+
+var pixelAreaHa = ee.Image
+  .pixelArea()
+  .divide(10000)
+  .rename('area_ha');
+
+
+// ------------------------------------------------------------
+// 50. HELPER FUNCTION:
+// CALCULATE AREA UNDER A BOOLEAN MASK
+// ------------------------------------------------------------
+
+var calculateAreaHa = function(maskImage) {
+
+  var area = pixelAreaHa
+
+    .updateMask(maskImage)
+
+    .reduceRegion({
+
+      reducer:
+        ee.Reducer.sum(),
+
+      geometry:
+        aoi,
+
+      scale:
+        10,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        4
+
+    });
+
+
+  return ee.Number(
+    area.get('area_ha')
+  );
+
+};
+
+
+// ------------------------------------------------------------
+// 51. TOTAL PROTECTED-AREA SIZE
+// ------------------------------------------------------------
+
+var totalAOIAreaHa =
+  ee.Number(
+    aoi.area()
+  )
+  .divide(10000);
+
+
+print(
+  'Total Nijhum Dwip AOI area (ha):',
+  totalAOIAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 52. 2017 HIGH-TREE BASELINE AREA
+// ------------------------------------------------------------
+//
+// Criterion:
+//
+// 2017 trees probability > 0.60
+//
+// ------------------------------------------------------------
+
+var baselineHighTreeAreaHa =
+  calculateAreaHa(
+    baselineForestMask
+  );
+
+
+print(
+  '2017 high-tree baseline area (ha):',
+  baselineHighTreeAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 53. CANDIDATE TREE-DECLINE AREA
+// ------------------------------------------------------------
+//
+// Criteria:
+//
+// 2017 trees > 0.60
+//
+// AND
+//
+// maximum later tree-probability drop > 0.25
+//
+// ------------------------------------------------------------
+
+var candidateDeclineAreaHa =
+  calculateAreaHa(
+    candidateDisturbance
+  );
+
+
+print(
+  'Candidate tree-decline area (ha):',
+  candidateDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 54. PERSISTENT TREE-DECLINE CANDIDATE AREA
+// ------------------------------------------------------------
+//
+// Criteria:
+//
+// 2017 trees > 0.60
+//
+// AND
+//
+// tree-probability drop > 0.25
+//
+// in at least TWO later years.
+//
+// ------------------------------------------------------------
+
+var persistentDeclineAreaHa =
+  calculateAreaHa(
+    persistentCandidate
+  );
+
+
+print(
+  'Persistent tree-decline candidate area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 55. CANDIDATE AREA AS % OF BASELINE HIGH-TREE AREA
+// ------------------------------------------------------------
+
+var candidatePercentBaseline =
+  candidateDeclineAreaHa
+
+    .divide(
+      baselineHighTreeAreaHa
+    )
+
+    .multiply(100);
+
+
+print(
+  'Candidate decline area (% of 2017 high-tree baseline):',
+  candidatePercentBaseline
+);
+
+
+// ------------------------------------------------------------
+// 56. PERSISTENT AREA AS % OF BASELINE HIGH-TREE AREA
+// ------------------------------------------------------------
+
+var persistentPercentBaseline =
+  persistentDeclineAreaHa
+
+    .divide(
+      baselineHighTreeAreaHa
+    )
+
+    .multiply(100);
+
+
+print(
+  'Persistent decline area (% of 2017 high-tree baseline):',
+  persistentPercentBaseline
+);
+
+
+// ------------------------------------------------------------
+// 57. PERSISTENT AREA AS % OF WHOLE PROTECTED AREA
+// ------------------------------------------------------------
+
+var persistentPercentAOI =
+  persistentDeclineAreaHa
+
+    .divide(
+      totalAOIAreaHa
+    )
+
+    .multiply(100);
+
+
+print(
+  'Persistent decline area (% of total AOI):',
+  persistentPercentAOI
+);
+
+
+// ------------------------------------------------------------
+// 58. CREATE ONE CLEAN SUMMARY TABLE
+// ------------------------------------------------------------
+
+var areaSummary =
+  ee.FeatureCollection([
+
+    ee.Feature(
+      null,
+      {
+
+        total_AOI_ha:
+          totalAOIAreaHa,
+
+        baseline_high_tree_2017_ha:
+          baselineHighTreeAreaHa,
+
+        candidate_tree_decline_ha:
+          candidateDeclineAreaHa,
+
+        persistent_tree_decline_ha:
+          persistentDeclineAreaHa,
+
+        candidate_pct_of_baseline:
+          candidatePercentBaseline,
+
+        persistent_pct_of_baseline:
+          persistentPercentBaseline,
+
+        persistent_pct_of_AOI:
+          persistentPercentAOI
+
+      }
+    )
+
+  ]);
+
+
+print(
+  'TREE-DECLINE AREA SUMMARY:',
+  areaSummary
+);
+
+
+
+
+// ============================================================
+// PART N
+// YEAR-OF-MAXIMUM-TREE-DROP SUMMARY
+// ============================================================
+//
+// PURPOSE:
+//
+// For every persistent candidate pixel:
+//
+// 2018 ... 2025
+//      ↓
+// Which year had the largest decline
+// from the 2017 tree-probability baseline?
+//
+// Then calculate how many hectares belong
+// to each maximum-decline year.
+//
+// IMPORTANT:
+//
+// This is "year of MAXIMUM decline".
+//
+// It is NOT necessarily the first year
+// when disturbance began.
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 59. CREATE POST-BASELINE YEAR LIST
+// ------------------------------------------------------------
+
+var changeYears = ee.List.sequence(
+  2018,
+  2025
+);
+
+
+// ------------------------------------------------------------
+// 60. CALCULATE AREA BY YEAR OF MAXIMUM TREE DROP
+// ------------------------------------------------------------
+
+var yearOfMaxDropSummary =
+  ee.FeatureCollection(
+
+    changeYears.map(function(year) {
+
+      year = ee.Number(year);
+
+
+      // Pixels whose strongest decline occurred
+      // in this specific year.
+      var yearMask =
+        maxDropYear
+          .eq(year)
+
+          // Keep only persistent tree-decline candidates.
+          .and(
+            persistentCandidate
+          );
+
+
+      // Calculate area in hectares.
+      var areaDict =
+        pixelAreaHa
+
+          .updateMask(
+            yearMask
+          )
+
+          .reduceRegion({
+
+            reducer:
+              ee.Reducer.sum(),
+
+            geometry:
+              aoi,
+
+            scale:
+              10,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              4
+
+          });
+
+
+      // If no pixel belongs to a year,
+      // return 0 instead of null.
+      var areaHa =
+        ee.Number(
+          ee.Algorithms.If(
+            areaDict.contains('area_ha'),
+            areaDict.get('area_ha'),
+            0
+          )
+        );
+
+
+      // Percentage of total persistent
+      // candidate area.
+      var percentPersistent =
+        areaHa
+
+          .divide(
+            persistentDeclineAreaHa
+          )
+
+          .multiply(100);
+
+
+      return ee.Feature(
+        null,
+        {
+
+          year:
+            year,
+
+          area_ha:
+            areaHa,
+
+          pct_of_persistent_area:
+            percentPersistent
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'YEAR OF MAXIMUM TREE DROP — AREA SUMMARY:',
+  yearOfMaxDropSummary
+);
+
+
+// ------------------------------------------------------------
+// 61. CLEAN YEAR LIST
+// ------------------------------------------------------------
+
+print(
+  'Years:',
+  yearOfMaxDropSummary
+    .aggregate_array('year')
+);
+
+
+print(
+  'Area by maximum-drop year (ha):',
+  yearOfMaxDropSummary
+    .aggregate_array('area_ha')
+);
+
+
+print(
+  '% of persistent area by year:',
+  yearOfMaxDropSummary
+    .aggregate_array(
+      'pct_of_persistent_area'
+    )
+);
+
+
+// ------------------------------------------------------------
+// 62. QC:
+// SUM ALL YEAR-SPECIFIC AREAS
+// ------------------------------------------------------------
+//
+// This should be very close to:
+//
+// persistentDeclineAreaHa
+//
+// = ~193.07 ha in your current result.
+//
+// ------------------------------------------------------------
+
+var summedYearAreaHa =
+  ee.Number(
+    yearOfMaxDropSummary
+      .aggregate_sum('area_ha')
+  );
+
+
+print(
+  'Sum of year-specific persistent areas (ha):',
+  summedYearAreaHa
+);
+
+
+print(
+  'Previously calculated persistent area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 63. DIFFERENCE FOR QC
+// ------------------------------------------------------------
+
+var yearAreaDifference =
+  summedYearAreaHa.subtract(
+    persistentDeclineAreaHa
+  );
+
+
+print(
+  'QC difference (ha):',
+  yearAreaDifference
+);
+
+
+// ------------------------------------------------------------
+// 64. BAR CHART
+// ------------------------------------------------------------
+
+var yearOfMaxDropChart =
+  ui.Chart.feature.byFeature(
+
+    yearOfMaxDropSummary,
+
+    'year',
+
+    ['area_ha']
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Persistent Tree-Decline Area by Year of Maximum Drop',
+
+    hAxis: {
+      title:
+        'Year'
+    },
+
+    vAxis: {
+      title:
+        'Area (ha)'
+    },
+
+    legend: {
+      position:
+        'none'
+    }
+
+  });
+
+
+print(
+  yearOfMaxDropChart
+);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
