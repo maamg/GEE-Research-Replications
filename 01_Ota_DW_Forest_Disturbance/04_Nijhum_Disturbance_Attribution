@@ -3288,7 +3288,294 @@ print(
 
 
 
+// -------------------
+// ============================================================
+// PART O
+// FIRST SUBSTANTIAL TREE-DECLINE YEAR
+// ============================================================
+//
+// Definition:
+//
+// First year after 2017 when:
+//
+// 2017 tree probability
+//      -
+// current-year tree probability
+//
+// > 0.25
+//
+// IMPORTANT:
+//
+// This is a threshold-based substantial decline,
+// NOT a statistical significance test.
+// ============================================================
 
+
+// ------------------------------------------------------------
+// 65. CREATE FIRST-DECLINE-YEAR IMAGE COLLECTION
+// ------------------------------------------------------------
+
+var firstDeclineYearCollection =
+  annualDrops.map(function(image) {
+
+    var year =
+      ee.Number(
+        image.get('year')
+      );
+
+
+    var substantialDecline =
+      image
+        .select('tree_drop')
+        .gt(dropThreshold);
+
+
+    // Create an image whose pixel value = current year,
+    // but retain only pixels exceeding the decline threshold.
+
+    var yearImage =
+      ee.Image.constant(year)
+        .rename('first_decline_year')
+
+        .updateMask(
+          substantialDecline
+        )
+
+        // Analyse only our persistent candidate pixels.
+        .updateMask(
+          persistentCandidate
+        );
+
+
+    return yearImage;
+
+  });
+
+
+// ------------------------------------------------------------
+// 66. FIND EARLIEST THRESHOLD-CROSSING YEAR
+// ------------------------------------------------------------
+//
+// Since years are numeric:
+//
+// min(2018, 2019, 2020 ...)
+// = earliest year that remained unmasked.
+//
+// ------------------------------------------------------------
+
+var firstDeclineYear =
+  firstDeclineYearCollection
+    .min()
+    .rename(
+      'first_decline_year'
+    );
+
+
+Map.addLayer(
+
+  firstDeclineYear,
+
+  {
+
+    min:
+      2018,
+
+    max:
+      2025,
+
+    palette: [
+      'blue',
+      'cyan',
+      'green',
+      'yellow',
+      'orange',
+      'red',
+      'purple',
+      'magenta'
+    ]
+
+  },
+
+  'First Substantial Tree-Decline Year',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 67. AREA SUMMARY BY FIRST DECLINE YEAR
+// ------------------------------------------------------------
+
+var firstDeclineSummary =
+  ee.FeatureCollection(
+
+    changeYears.map(function(year) {
+
+      year =
+        ee.Number(year);
+
+
+      var yearMask =
+        firstDeclineYear
+          .eq(year);
+
+
+      var areaDict =
+        pixelAreaHa
+
+          .updateMask(
+            yearMask
+          )
+
+          .reduceRegion({
+
+            reducer:
+              ee.Reducer.sum(),
+
+            geometry:
+              aoi,
+
+            scale:
+              10,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              4
+
+          });
+
+
+      var areaHa =
+        ee.Number(
+
+          ee.Algorithms.If(
+
+            areaDict.contains(
+              'area_ha'
+            ),
+
+            areaDict.get(
+              'area_ha'
+            ),
+
+            0
+
+          )
+
+        );
+
+
+      var percentPersistent =
+        areaHa
+
+          .divide(
+            persistentDeclineAreaHa
+          )
+
+          .multiply(100);
+
+
+      return ee.Feature(
+        null,
+        {
+
+          year:
+            year,
+
+          area_ha:
+            areaHa,
+
+          pct_of_persistent_area:
+            percentPersistent
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'FIRST SUBSTANTIAL DECLINE YEAR — AREA SUMMARY:',
+  firstDeclineSummary
+);
+
+
+// ------------------------------------------------------------
+// 68. QC: TOTAL AREA
+// ------------------------------------------------------------
+
+var firstDeclineAreaSum =
+  ee.Number(
+
+    firstDeclineSummary
+      .aggregate_sum(
+        'area_ha'
+      )
+
+  );
+
+
+print(
+  'Sum of first-decline areas (ha):',
+  firstDeclineAreaSum
+);
+
+
+print(
+  'Persistent candidate area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 69. BAR CHART
+// ------------------------------------------------------------
+
+var firstDeclineChart =
+  ui.Chart.feature.byFeature(
+
+    firstDeclineSummary,
+
+    'year',
+
+    [
+      'area_ha'
+    ]
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Persistent Tree-Decline Area by First Substantial Decline Year',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+      title: 'Area (ha)'
+    },
+
+    legend: {
+      position: 'none'
+    }
+
+  });
+
+
+print(
+  firstDeclineChart
+);
 
 
 
