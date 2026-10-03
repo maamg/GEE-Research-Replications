@@ -1,0 +1,1115 @@
+// ============================================================
+// PROJECT 01 — NIJHUM DWIP
+// FILE: 03_Nijhum_Tree_Disturbance_Search.js
+//
+// Candidate Tree-Disturbance Search
+//
+// Study area: Nijhum Dwip National Park, Bangladesh
+// SITE_ID: 317318
+//
+// Baseline year: 2017
+// Monitoring period: 2018–2025
+// Seasonal window: November–December
+//
+// PURPOSE:
+// 1. Identify pixels that were strongly tree-like in 2017.
+// 2. Track annual Dynamic World tree probability.
+// 3. Find the largest post-2017 decline at each pixel.
+// 4. Record the year of maximum decline.
+// 5. Identify candidate disturbance pixels.
+// 6. Check whether decline occurred in multiple years.
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 1. LOAD AOI
+// ------------------------------------------------------------
+
+var wdpa = ee.FeatureCollection(
+  'WCMC/WDPA/current/polygons'
+);
+
+var nijhum = wdpa.filter(
+  ee.Filter.eq('SITE_ID', 317318)
+);
+
+var aoi = nijhum.geometry();
+
+print('Nijhum Dwip:', nijhum);
+print('Matched features:', nijhum.size());
+
+Map.centerObject(aoi, 11);
+
+Map.addLayer(
+  nijhum,
+  {color: 'yellow'},
+  'Nijhum Dwip Boundary',
+  true
+);
+
+
+// ------------------------------------------------------------
+// 2. LOAD DYNAMIC WORLD
+// ------------------------------------------------------------
+
+var dw = ee.ImageCollection(
+    'GOOGLE/DYNAMICWORLD/V1'
+  )
+  .filterBounds(aoi)
+  .filterDate(
+    '2016-01-01',
+    '2026-01-01'
+  )
+  .filter(
+    ee.Filter.calendarRange(
+      11,
+      12,
+      'month'
+    )
+  );
+
+
+// ------------------------------------------------------------
+// 3. CREATE YEAR LIST
+// ------------------------------------------------------------
+
+var years = ee.List.sequence(
+  2016,
+  2025
+);
+
+
+// ------------------------------------------------------------
+// 4. CREATE ANNUAL TREE-PROBABILITY IMAGES
+// ------------------------------------------------------------
+//
+// For each year:
+// Nov-Dec Dynamic World observations
+//          ↓
+// median tree probability
+//          ↓
+// one annual tree-probability image
+//
+// NOTE:
+// This is still an exploratory annual-composite method,
+// not yet the complete Ota disturbance-attribution workflow.
+// ------------------------------------------------------------
+
+var annualTrees = ee.ImageCollection.fromImages(
+
+  years.map(function(year) {
+
+    year = ee.Number(year);
+
+    var start = ee.Date.fromYMD(
+      year,
+      11,
+      1
+    );
+
+    var end = ee.Date.fromYMD(
+      year.add(1),
+      1,
+      1
+    );
+
+    var yearlyDW = dw
+      .filterDate(start, end);
+
+    var annualTree = yearlyDW
+      .select('trees')
+      .median()
+      .rename('trees')
+      .clip(aoi);
+
+    return annualTree
+
+      .set(
+        'year',
+        year
+      )
+
+      .set(
+        'system:time_start',
+        ee.Date.fromYMD(
+          year,
+          12,
+          1
+        ).millis()
+      )
+
+      .set(
+        'image_count',
+        yearlyDW.size()
+      );
+
+  })
+
+);
+
+
+print(
+  'Annual tree-probability collection:',
+  annualTrees
+);
+
+
+// ------------------------------------------------------------
+// 5. DEFINE 2017 BASELINE
+// ------------------------------------------------------------
+
+var baselineYear = 2017;
+
+var baselineTree = ee.Image(
+
+  annualTrees
+    .filter(
+      ee.Filter.eq(
+        'year',
+        baselineYear
+      )
+    )
+    .first()
+
+)
+.rename('baseline_tree');
+
+
+// ------------------------------------------------------------
+// 6. CREATE HIGH-TREE BASELINE MASK
+// ------------------------------------------------------------
+//
+// Exploratory threshold:
+//
+// trees probability > 0.60
+//
+// IMPORTANT:
+// This does NOT mean 60% canopy cover.
+//
+// It means Dynamic World assigned
+// >0.60 probability to the 'trees' class.
+// ------------------------------------------------------------
+
+var baselineTreeThreshold = 0.60;
+
+var baselineForestMask =
+  baselineTree.gt(
+    baselineTreeThreshold
+  );
+
+
+Map.addLayer(
+
+  baselineTree,
+
+  {
+    min: 0,
+    max: 1,
+    palette: [
+      'white',
+      'lightgreen',
+      'darkgreen'
+    ]
+  },
+
+  '2017 Tree Probability',
+
+  false
+
+);
+
+
+Map.addLayer(
+
+  baselineForestMask
+    .selfMask(),
+
+  {
+    palette: [
+      'darkgreen'
+    ]
+  },
+
+  '2017 High-Tree Baseline (>0.60)',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 7. CREATE POST-2017 COLLECTION
+// ------------------------------------------------------------
+
+var post2017 =
+  annualTrees.filter(
+    ee.Filter.gt(
+      'year',
+      baselineYear
+    )
+  );
+
+
+// ------------------------------------------------------------
+// 8. CALCULATE TREE DECLINE FOR EACH YEAR
+// ------------------------------------------------------------
+//
+// tree_drop = baseline tree probability
+//             - current-year tree probability
+//
+// Example:
+//
+// 2017 tree probability = 0.82
+// 2021 tree probability = 0.35
+//
+// tree_drop = 0.82 - 0.35
+//           = 0.47
+//
+// Larger positive value = stronger decline.
+//
+// Negative value = tree probability increased.
+// ------------------------------------------------------------
+
+var annualDrops =
+  post2017.map(function(image) {
+
+    var year =
+      ee.Number(
+        image.get('year')
+      );
+
+
+    var currentTree =
+      image.select('trees');
+
+
+    var treeDrop =
+      baselineTree
+        .subtract(currentTree)
+        .rename('tree_drop');
+
+
+    var treeChange =
+      currentTree
+        .subtract(baselineTree)
+        .rename('tree_change');
+
+
+    var yearBand =
+      ee.Image.constant(year)
+        .rename('drop_year')
+        .toInt16();
+
+
+    return currentTree
+
+      .addBands(
+        treeDrop
+      )
+
+      .addBands(
+        treeChange
+      )
+
+      .addBands(
+        yearBand
+      )
+
+      .set(
+        'year',
+        year
+      )
+
+      .set(
+        'system:time_start',
+        image.get(
+          'system:time_start'
+        )
+      );
+
+  });
+
+
+print(
+  'Annual tree-drop collection:',
+  annualDrops
+);
+
+
+// ------------------------------------------------------------
+// 9. FIND MAXIMUM TREE-PROBABILITY DROP
+// ------------------------------------------------------------
+//
+// qualityMosaic('tree_drop')
+//
+// For EACH PIXEL:
+//
+// look through 2018–2025
+//          ↓
+// find year with largest tree_drop
+//          ↓
+// keep that year's:
+// tree probability
+// tree_drop
+// tree_change
+// drop_year
+//
+// Therefore:
+//
+// maxDropComposite.select('tree_drop')
+// = maximum decline observed
+//
+// maxDropComposite.select('drop_year')
+// = year in which maximum decline occurred
+// ------------------------------------------------------------
+
+var maxDropComposite =
+  annualDrops.qualityMosaic(
+    'tree_drop'
+  );
+
+
+var maxTreeDrop =
+  maxDropComposite
+    .select('tree_drop')
+    .updateMask(
+      baselineForestMask
+    );
+
+
+var maxDropYear =
+  maxDropComposite
+    .select('drop_year')
+    .updateMask(
+      baselineForestMask
+    );
+
+
+// ------------------------------------------------------------
+// 10. VISUALIZE MAXIMUM TREE DROP
+// ------------------------------------------------------------
+
+Map.addLayer(
+
+  maxTreeDrop,
+
+  {
+    min: 0,
+    max: 0.60,
+
+    palette: [
+      'white',
+      'yellow',
+      'orange',
+      'red',
+      'darkred'
+    ]
+  },
+
+  'Maximum Tree Probability Drop — 2018-2025',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 11. VISUALIZE YEAR OF MAXIMUM DROP
+// ------------------------------------------------------------
+
+Map.addLayer(
+
+  maxDropYear,
+
+  {
+    min: 2018,
+    max: 2025,
+
+    palette: [
+      'blue',
+      'cyan',
+      'green',
+      'yellow',
+      'orange',
+      'red',
+      'purple',
+      'magenta'
+    ]
+  },
+
+  'Year of Maximum Tree Drop',
+
+  false
+
+);
+
+
+// ------------------------------------------------------------
+// 12. CREATE CANDIDATE DISTURBANCE MASK
+// ------------------------------------------------------------
+//
+// Exploratory threshold:
+//
+// baseline trees > 0.60
+//
+// AND
+//
+// maximum tree-probability drop > 0.25
+//
+// Example:
+//
+// 2017 = 0.80
+// later = 0.45
+//
+// drop = 0.35
+//
+// → candidate disturbance pixel
+//
+// IMPORTANT:
+// 0.25 is currently an exploratory threshold.
+// It is NOT yet a validated disturbance threshold.
+// ------------------------------------------------------------
+
+var dropThreshold = 0.25;
+
+
+var candidateDisturbance =
+  baselineForestMask
+
+    .and(
+      maxTreeDrop.gt(
+        dropThreshold
+      )
+    );
+
+
+Map.addLayer(
+
+  candidateDisturbance
+    .selfMask(),
+
+  {
+    palette: [
+      'red'
+    ]
+  },
+
+  'Candidate Tree Disturbance',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 13. COUNT NUMBER OF YEARS WITH LARGE DECLINE
+// ------------------------------------------------------------
+//
+// This helps distinguish:
+//
+// one-year temporary dip
+//
+// from
+//
+// repeated / persistent decline.
+//
+// For every year:
+// tree_drop > 0.25 ?
+//
+// TRUE  = 1
+// FALSE = 0
+//
+// Then sum across years.
+// ------------------------------------------------------------
+
+var declineYearCount =
+  annualDrops
+
+    .map(function(image) {
+
+      return image
+        .select('tree_drop')
+        .gt(dropThreshold)
+        .rename(
+          'large_decline'
+        );
+
+    })
+
+    .sum()
+
+    .rename(
+      'decline_year_count'
+    )
+
+    .updateMask(
+      baselineForestMask
+    );
+
+
+Map.addLayer(
+
+  declineYearCount,
+
+  {
+    min: 1,
+    max: 5,
+
+    palette: [
+      'yellow',
+      'orange',
+      'red',
+      'purple',
+      'black'
+    ]
+  },
+
+  'Number of Years with Tree Drop > 0.25',
+
+  false
+
+);
+
+
+// ------------------------------------------------------------
+// 14. PERSISTENT / REPEATED DISTURBANCE CANDIDATES
+// ------------------------------------------------------------
+//
+// Require significant decline in at least 2 years.
+//
+// This is stricter than the previous candidate mask.
+// ------------------------------------------------------------
+
+var persistentCandidate =
+  candidateDisturbance
+
+    .and(
+      declineYearCount.gte(2)
+    );
+
+
+Map.addLayer(
+
+  persistentCandidate
+    .selfMask(),
+
+  {
+    palette: [
+      'magenta'
+    ]
+  },
+
+  'Repeated Tree-Decline Candidate (>=2 years)',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 15. CALCULATE BASELINE HIGH-TREE AREA
+// ------------------------------------------------------------
+
+var pixelAreaHa =
+  ee.Image.pixelArea()
+    .divide(10000);
+
+
+var baselineTreeArea =
+  pixelAreaHa
+
+    .updateMask(
+      baselineForestMask
+    )
+
+    .reduceRegion({
+
+      reducer:
+        ee.Reducer.sum(),
+
+      geometry:
+        aoi,
+
+      scale:
+        10,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+print(
+  '2017 high-tree baseline area (ha):',
+  baselineTreeArea
+);
+
+
+// ------------------------------------------------------------
+// 16. CALCULATE CANDIDATE DISTURBANCE AREA
+// ------------------------------------------------------------
+
+var candidateArea =
+  pixelAreaHa
+
+    .updateMask(
+      candidateDisturbance
+    )
+
+    .reduceRegion({
+
+      reducer:
+        ee.Reducer.sum(),
+
+      geometry:
+        aoi,
+
+      scale:
+        10,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+print(
+  'Candidate disturbance area (ha):',
+  candidateArea
+);
+
+
+// ------------------------------------------------------------
+// 17. CALCULATE REPEATED-DECLINE AREA
+// ------------------------------------------------------------
+
+var persistentArea =
+  pixelAreaHa
+
+    .updateMask(
+      persistentCandidate
+    )
+
+    .reduceRegion({
+
+      reducer:
+        ee.Reducer.sum(),
+
+      geometry:
+        aoi,
+
+      scale:
+        10,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+print(
+  'Repeated-decline candidate area (ha):',
+  persistentArea
+);
+
+
+// ------------------------------------------------------------
+// 18. CREATE CANDIDATE SAMPLE PIXELS
+// ------------------------------------------------------------
+//
+// Randomly sample candidate disturbance pixels.
+//
+// These are NOT validation samples yet.
+//
+// They are only exploratory candidate locations
+// for inspecting probability trajectories.
+// ------------------------------------------------------------
+
+var candidateImage =
+  maxTreeDrop
+    .rename('max_tree_drop')
+
+    .addBands(
+      maxDropYear.rename(
+        'max_drop_year'
+      )
+    )
+
+    .addBands(
+      declineYearCount
+    )
+
+    .updateMask(
+      candidateDisturbance
+    );
+
+
+var candidateSamples =
+  candidateImage.sample({
+
+    region:
+      aoi,
+
+    scale:
+      10,
+
+    numPixels:
+      100,
+
+    seed:
+      42,
+
+    geometries:
+      true
+
+  });
+
+
+print(
+  'Candidate disturbance sample pixels:',
+  candidateSamples
+);
+
+
+// ------------------------------------------------------------
+// 19. SORT CANDIDATES BY MAXIMUM TREE DROP
+// ------------------------------------------------------------
+
+var rankedCandidates =
+  candidateSamples.sort(
+    'max_tree_drop',
+    false
+  );
+
+
+print(
+  'Candidate pixels ranked by tree decline:',
+  rankedCandidates
+);
+
+
+// ------------------------------------------------------------
+// 20. DISPLAY CANDIDATE SAMPLE POINTS
+// ------------------------------------------------------------
+
+Map.addLayer(
+
+  candidateSamples,
+
+  {
+    color:
+      'cyan'
+  },
+
+  'Candidate Sample Pixels',
+
+  false
+
+);
+
+
+// ------------------------------------------------------------
+// 21. SELECT ONE EXPLORATORY CANDIDATE POINT
+// ------------------------------------------------------------
+//
+// Take the sampled candidate with
+// the largest tree-probability decline.
+//
+// NOTE:
+// Because candidateSamples is a sample,
+// this may not be the absolute strongest pixel
+// in the entire protected area.
+//
+// It is simply a useful exploratory point.
+// ------------------------------------------------------------
+
+var candidatePointFeature =
+  ee.Feature(
+    rankedCandidates.first()
+  );
+
+
+var candidatePoint =
+  candidatePointFeature.geometry();
+
+
+print(
+  'Selected exploratory candidate:',
+  candidatePointFeature
+);
+
+
+Map.addLayer(
+
+  candidatePoint,
+
+  {
+    color:
+      'cyan'
+  },
+
+  'Selected Candidate Point',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 22. TREE-PROBABILITY TIME SERIES AT CANDIDATE POINT
+// ------------------------------------------------------------
+
+var candidateTreeChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      annualTrees,
+
+    region:
+      candidatePoint,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+
+
+  .setOptions({
+
+    title:
+      'Tree Probability at Candidate Disturbance Pixel',
+
+    hAxis: {
+      title:
+        'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Tree Probability',
+
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      6
+
+  });
+
+
+print(
+  candidateTreeChart
+);
+
+
+// ------------------------------------------------------------
+// 23. PRINT YEAR-BY-YEAR TREE VALUES
+// ------------------------------------------------------------
+
+var candidateTreeSeries =
+  ee.FeatureCollection(
+
+    annualTrees.map(
+      function(image) {
+
+        var value =
+          image.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              candidatePoint,
+
+            scale:
+              10,
+
+            bestEffort:
+              true
+
+          });
+
+
+        return ee.Feature(
+          null,
+          {
+
+            year:
+              image.get('year'),
+
+            trees:
+              value.get('trees')
+
+          }
+        );
+
+      }
+    )
+
+  );
+
+
+print(
+  'Candidate annual tree probabilities:',
+  candidateTreeSeries
+);
+
+
+print(
+  'Candidate tree probability list:',
+  candidateTreeSeries
+    .aggregate_array(
+      'trees'
+    )
+);
+
+
+// ------------------------------------------------------------
+// 24. 2017 VS 2025 TREE CHANGE
+// ------------------------------------------------------------
+
+var tree2025 =
+  ee.Image(
+
+    annualTrees
+      .filter(
+        ee.Filter.eq(
+          'year',
+          2025
+        )
+      )
+      .first()
+
+  );
+
+
+var change2017_2025 =
+  tree2025
+
+    .subtract(
+      baselineTree
+    )
+
+    .rename(
+      'tree_change_2017_2025'
+    )
+
+    .updateMask(
+      baselineForestMask
+    );
+
+
+Map.addLayer(
+
+  change2017_2025,
+
+  {
+
+    min:
+      -0.60,
+
+    max:
+      0.60,
+
+    palette: [
+      'darkred',
+      'red',
+      'orange',
+      'white',
+      'lightgreen',
+      'darkgreen'
+    ]
+
+  },
+
+  'Tree Change 2017-2025',
+
+  false
+
+);
+
+
+// ============================================================
+// INTERPRETATION GUIDE
+// ============================================================
+//
+// 2017 High-Tree Baseline
+// -----------------------
+// Shows pixels that were strongly tree-like
+// in the baseline year.
+//
+//
+//
+// Maximum Tree Probability Drop
+// -----------------------------
+// White / low values:
+// little decline.
+//
+// Orange / red:
+// larger decline.
+//
+//
+//
+// Candidate Tree Disturbance
+// --------------------------
+// Red pixels:
+//
+// 2017 trees > 0.60
+//
+// AND
+//
+// maximum later decline > 0.25.
+//
+//
+//
+// Repeated Tree-Decline Candidate
+// --------------------------------
+// Magenta pixels:
+//
+// significant decline occurred
+// in at least two post-baseline years.
+//
+// These are stronger disturbance candidates,
+// but still require validation.
+//
+//
+//
+// Year of Maximum Tree Drop
+// -------------------------
+// Shows WHEN the strongest probability decline
+// occurred at each baseline tree pixel.
+//
+//
+//
+// IMPORTANT
+// ---------
+// A decline in Dynamic World tree probability
+// is NOT automatically proof of deforestation.
+//
+// Possible explanations include:
+//
+// - real canopy disturbance
+// - temporary inundation
+// - seasonal / phenological variation
+// - shoreline dynamics
+// - cloud / observation effects
+// - classification uncertainty
+//
+// Candidate pixels must therefore be checked
+// spatially and temporally before being interpreted
+// as actual forest disturbance.
+// ============================================================
