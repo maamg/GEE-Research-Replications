@@ -3932,13 +3932,28 @@ var processCodes =
   );
 
 
+// Labels correspond to:
+// 1 = Abrupt
+// 2 = Rapid
+// 3 = Progressive
+// 4 = Prolonged progressive
+
+var processLabels =
+  ee.List([
+    'Abrupt',
+    'Rapid',
+    'Progressive',
+    'Prolonged progressive'
+  ]);
+
+
 var processSummary =
   ee.FeatureCollection(
 
     processCodes.map(function(code) {
 
-      code =
-        ee.Number(code);
+      // Convert explicitly to integer
+      code = ee.Number(code).toInt();
 
 
       var classMask =
@@ -4004,24 +4019,14 @@ var processSummary =
           .multiply(100);
 
 
+      // code 1 → index 0
+      // code 2 → index 1
+      // code 3 → index 2
+      // code 4 → index 3
+
       var label =
-        ee.Dictionary({
-
-          '1':
-            'Abrupt',
-
-          '2':
-            'Rapid',
-
-          '3':
-            'Progressive',
-
-          '4':
-            'Prolonged progressive'
-
-        })
-        .get(
-          code.format()
+        processLabels.get(
+          code.subtract(1)
         );
 
 
