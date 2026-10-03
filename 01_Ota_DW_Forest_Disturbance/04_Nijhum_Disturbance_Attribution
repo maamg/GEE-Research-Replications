@@ -1,23 +1,29 @@
 // ============================================================
 // PROJECT 01 — NIJHUM DWIP
-// FILE: 03_Nijhum_Tree_Disturbance_Search.js
+// FILE: 04_Nijhum_Disturbance_Attribution.js
 //
-// Candidate Tree-Disturbance Search
+// Candidate Disturbance Attribution
 //
 // Study area: Nijhum Dwip National Park, Bangladesh
 // SITE_ID: 317318
 //
-// Baseline year: 2017
-// Monitoring period: 2018–2025
-// Seasonal window: November–December
+// Baseline forest year: 2017
+// Pre-disturbance reference: 2023
+// Post-disturbance condition: mean of 2024 and 2025
 //
 // PURPOSE:
-// 1. Identify pixels that were strongly tree-like in 2017.
-// 2. Track annual Dynamic World tree probability.
-// 3. Find the largest post-2017 decline at each pixel.
-// 4. Record the year of maximum decline.
-// 5. Identify candidate disturbance pixels.
-// 6. Check whether decline occurred in multiple years.
+// 1. Reconstruct persistent tree-decline candidates.
+// 2. Examine all Dynamic World probabilities at a candidate pixel.
+// 3. Examine mean trajectories across persistent candidate patches.
+// 4. Determine which non-tree probabilities increased when
+//    tree probability declined.
+// 5. Produce an exploratory transition-attribution map.
+// 6. Visually compare Sentinel-2 imagery before and after decline.
+//
+// IMPORTANT:
+// This is an exploratory Ota-inspired attribution analysis.
+// It is NOT yet the exact disturbance-attribution algorithm
+// of Li, Ota & Mizoue.
 // ============================================================
 
 
@@ -35,17 +41,17 @@ var nijhum = wdpa.filter(
 
 var aoi = nijhum.geometry();
 
-print('Nijhum Dwip:', nijhum);
-print('Matched features:', nijhum.size());
-
 Map.centerObject(aoi, 11);
 
 Map.addLayer(
   nijhum,
   {color: 'yellow'},
   'Nijhum Dwip Boundary',
-  true
+  false
 );
+
+print('Nijhum Dwip:', nijhum);
+print('Matched features:', nijhum.size());
 
 
 // ------------------------------------------------------------
@@ -56,10 +62,7 @@ var dw = ee.ImageCollection(
     'GOOGLE/DYNAMICWORLD/V1'
   )
   .filterBounds(aoi)
-  .filterDate(
-    '2016-01-01',
-    '2026-01-01'
-  )
+  .filterDate('2016-01-01', '2026-01-01')
   .filter(
     ee.Filter.calendarRange(
       11,
@@ -69,8 +72,26 @@ var dw = ee.ImageCollection(
   );
 
 
+var probabilityBands = [
+  'water',
+  'trees',
+  'grass',
+  'flooded_vegetation',
+  'crops',
+  'shrub_and_scrub',
+  'built',
+  'bare',
+  'snow_and_ice'
+];
+
+
+var dw9 = dw.select(
+  probabilityBands
+);
+
+
 // ------------------------------------------------------------
-// 3. CREATE YEAR LIST
+// 3. CREATE ANNUAL 9-BAND PROBABILITY COLLECTION
 // ------------------------------------------------------------
 
 var years = ee.List.sequence(
@@ -79,23 +100,7 @@ var years = ee.List.sequence(
 );
 
 
-// ------------------------------------------------------------
-// 4. CREATE ANNUAL TREE-PROBABILITY IMAGES
-// ------------------------------------------------------------
-//
-// For each year:
-// Nov-Dec Dynamic World observations
-//          ↓
-// median tree probability
-//          ↓
-// one annual tree-probability image
-//
-// NOTE:
-// This is still an exploratory annual-composite method,
-// not yet the complete Ota disturbance-attribution workflow.
-// ------------------------------------------------------------
-
-var annualTrees = ee.ImageCollection.fromImages(
+var annualDW9 = ee.ImageCollection.fromImages(
 
   years.map(function(year) {
 
@@ -113,16 +118,16 @@ var annualTrees = ee.ImageCollection.fromImages(
       1
     );
 
-    var yearlyDW = dw
-      .filterDate(start, end);
+    var yearlyDW = dw9.filterDate(
+      start,
+      end
+    );
 
-    var annualTree = yearlyDW
-      .select('trees')
+    var annualImage = yearlyDW
       .median()
-      .rename('trees')
       .clip(aoi);
 
-    return annualTree
+    return annualImage
 
       .set(
         'year',
@@ -149,20 +154,20 @@ var annualTrees = ee.ImageCollection.fromImages(
 
 
 print(
-  'Annual tree-probability collection:',
-  annualTrees
+  'Annual 9-band Dynamic World collection:',
+  annualDW9
 );
 
 
 // ------------------------------------------------------------
-// 5. DEFINE 2017 BASELINE
+// 4. RECONSTRUCT 2017 HIGH-TREE BASELINE
 // ------------------------------------------------------------
 
 var baselineYear = 2017;
 
-var baselineTree = ee.Image(
+var baselineImage = ee.Image(
 
-  annualTrees
+  annualDW9
     .filter(
       ee.Filter.eq(
         'year',
@@ -171,26 +176,16 @@ var baselineTree = ee.Image(
     )
     .first()
 
-)
-.rename('baseline_tree');
+);
 
 
-// ------------------------------------------------------------
-// 6. CREATE HIGH-TREE BASELINE MASK
-// ------------------------------------------------------------
-//
-// Exploratory threshold:
-//
-// trees probability > 0.60
-//
-// IMPORTANT:
-// This does NOT mean 60% canopy cover.
-//
-// It means Dynamic World assigned
-// >0.60 probability to the 'trees' class.
-// ------------------------------------------------------------
+var baselineTree = baselineImage
+  .select('trees')
+  .rename('baseline_tree');
+
 
 var baselineTreeThreshold = 0.60;
+
 
 var baselineForestMask =
   baselineTree.gt(
@@ -200,167 +195,69 @@ var baselineForestMask =
 
 Map.addLayer(
 
-  baselineTree,
+  baselineForestMask.selfMask(),
 
-  {
-    min: 0,
-    max: 1,
-    palette: [
-      'white',
-      'lightgreen',
-      'darkgreen'
-    ]
-  },
-
-  '2017 Tree Probability',
-
-  false
-
-);
-
-
-Map.addLayer(
-
-  baselineForestMask
-    .selfMask(),
-
-  {
-    palette: [
-      'darkgreen'
-    ]
-  },
+  {palette: ['darkgreen']},
 
   '2017 High-Tree Baseline (>0.60)',
 
-  true
-
+  false
 );
 
 
 // ------------------------------------------------------------
-// 7. CREATE POST-2017 COLLECTION
+// 5. CREATE POST-2017 TREE-DROP COLLECTION
 // ------------------------------------------------------------
 
-var post2017 =
-  annualTrees.filter(
-    ee.Filter.gt(
-      'year',
-      baselineYear
-    )
-  );
+var post2017 = annualDW9.filter(
+  ee.Filter.gt(
+    'year',
+    baselineYear
+  )
+);
 
-
-// ------------------------------------------------------------
-// 8. CALCULATE TREE DECLINE FOR EACH YEAR
-// ------------------------------------------------------------
-//
-// tree_drop = baseline tree probability
-//             - current-year tree probability
-//
-// Example:
-//
-// 2017 tree probability = 0.82
-// 2021 tree probability = 0.35
-//
-// tree_drop = 0.82 - 0.35
-//           = 0.47
-//
-// Larger positive value = stronger decline.
-//
-// Negative value = tree probability increased.
-// ------------------------------------------------------------
 
 var annualDrops =
   post2017.map(function(image) {
 
-    var year =
-      ee.Number(
-        image.get('year')
-      );
-
+    var year = ee.Number(
+      image.get('year')
+    );
 
     var currentTree =
       image.select('trees');
-
 
     var treeDrop =
       baselineTree
         .subtract(currentTree)
         .rename('tree_drop');
 
-
-    var treeChange =
-      currentTree
-        .subtract(baselineTree)
-        .rename('tree_change');
-
-
     var yearBand =
       ee.Image.constant(year)
         .rename('drop_year')
         .toInt16();
 
+    return image
 
-    return currentTree
+      .addBands(treeDrop)
 
-      .addBands(
-        treeDrop
-      )
-
-      .addBands(
-        treeChange
-      )
-
-      .addBands(
-        yearBand
-      )
+      .addBands(yearBand)
 
       .set(
         'year',
         year
       )
 
-      .set(
-        'system:time_start',
-        image.get(
-          'system:time_start'
-        )
+      .copyProperties(
+        image,
+        ['system:time_start']
       );
 
   });
 
 
-print(
-  'Annual tree-drop collection:',
-  annualDrops
-);
-
-
 // ------------------------------------------------------------
-// 9. FIND MAXIMUM TREE-PROBABILITY DROP
-// ------------------------------------------------------------
-//
-// qualityMosaic('tree_drop')
-//
-// For EACH PIXEL:
-//
-// look through 2018–2025
-//          ↓
-// find year with largest tree_drop
-//          ↓
-// keep that year's:
-// tree probability
-// tree_drop
-// tree_change
-// drop_year
-//
-// Therefore:
-//
-// maxDropComposite.select('tree_drop')
-// = maximum decline observed
-//
-// maxDropComposite.select('drop_year')
-// = year in which maximum decline occurred
+// 6. FIND MAXIMUM TREE DROP
 // ------------------------------------------------------------
 
 var maxDropComposite =
@@ -386,141 +283,21 @@ var maxDropYear =
 
 
 // ------------------------------------------------------------
-// 10. VISUALIZE MAXIMUM TREE DROP
-// ------------------------------------------------------------
-
-Map.addLayer(
-
-  maxTreeDrop,
-
-  {
-    min: 0,
-    max: 0.60,
-
-    palette: [
-      'white',
-      'yellow',
-      'orange',
-      'red',
-      'darkred'
-    ]
-  },
-
-  'Maximum Tree Probability Drop — 2018-2025',
-
-  true
-
-);
-
-
-// ------------------------------------------------------------
-// 11. VISUALIZE YEAR OF MAXIMUM DROP
-// ------------------------------------------------------------
-
-Map.addLayer(
-
-  maxDropYear,
-
-  {
-    min: 2018,
-    max: 2025,
-
-    palette: [
-      'blue',
-      'cyan',
-      'green',
-      'yellow',
-      'orange',
-      'red',
-      'purple',
-      'magenta'
-    ]
-  },
-
-  'Year of Maximum Tree Drop',
-
-  false
-
-);
-
-
-// ------------------------------------------------------------
-// 12. CREATE CANDIDATE DISTURBANCE MASK
-// ------------------------------------------------------------
-//
-// Exploratory threshold:
-//
-// baseline trees > 0.60
-//
-// AND
-//
-// maximum tree-probability drop > 0.25
-//
-// Example:
-//
-// 2017 = 0.80
-// later = 0.45
-//
-// drop = 0.35
-//
-// → candidate disturbance pixel
-//
-// IMPORTANT:
-// 0.25 is currently an exploratory threshold.
-// It is NOT yet a validated disturbance threshold.
+// 7. CANDIDATE + REPEATED DECLINE MASKS
 // ------------------------------------------------------------
 
 var dropThreshold = 0.25;
 
 
 var candidateDisturbance =
-  baselineForestMask
+  baselineForestMask.and(
 
-    .and(
-      maxTreeDrop.gt(
-        dropThreshold
-      )
-    );
+    maxTreeDrop.gt(
+      dropThreshold
+    )
 
+  );
 
-Map.addLayer(
-
-  candidateDisturbance
-    .selfMask(),
-
-  {
-    palette: [
-      'red'
-    ]
-  },
-
-  'Candidate Tree Disturbance',
-
-  true
-
-);
-
-
-// ------------------------------------------------------------
-// 13. COUNT NUMBER OF YEARS WITH LARGE DECLINE
-// ------------------------------------------------------------
-//
-// This helps distinguish:
-//
-// one-year temporary dip
-//
-// from
-//
-// repeated / persistent decline.
-//
-// For every year:
-// tree_drop > 0.25 ?
-//
-// TRUE  = 1
-// FALSE = 0
-//
-// Then sum across years.
-// ------------------------------------------------------------
 
 var declineYearCount =
   annualDrops
@@ -530,9 +307,7 @@ var declineYearCount =
       return image
         .select('tree_drop')
         .gt(dropThreshold)
-        .rename(
-          'large_decline'
-        );
+        .rename('large_decline');
 
     })
 
@@ -547,45 +322,25 @@ var declineYearCount =
     );
 
 
+var persistentCandidate =
+  candidateDisturbance.and(
+
+    declineYearCount.gte(2)
+
+  );
+
+
 Map.addLayer(
 
-  declineYearCount,
+  candidateDisturbance
+    .selfMask(),
 
-  {
-    min: 1,
-    max: 5,
+  {palette: ['red']},
 
-    palette: [
-      'yellow',
-      'orange',
-      'red',
-      'purple',
-      'black'
-    ]
-  },
-
-  'Number of Years with Tree Drop > 0.25',
+  'Candidate Tree Disturbance',
 
   false
-
 );
-
-
-// ------------------------------------------------------------
-// 14. PERSISTENT / REPEATED DISTURBANCE CANDIDATES
-// ------------------------------------------------------------
-//
-// Require significant decline in at least 2 years.
-//
-// This is stricter than the previous candidate mask.
-// ------------------------------------------------------------
-
-var persistentCandidate =
-  candidateDisturbance
-
-    .and(
-      declineYearCount.gte(2)
-    );
 
 
 Map.addLayer(
@@ -593,136 +348,16 @@ Map.addLayer(
   persistentCandidate
     .selfMask(),
 
-  {
-    palette: [
-      'magenta'
-    ]
-  },
+  {palette: ['magenta']},
 
-  'Repeated Tree-Decline Candidate (>=2 years)',
+  'Persistent Candidate (>=2 years)',
 
   true
-
 );
 
 
 // ------------------------------------------------------------
-// 15. CALCULATE BASELINE HIGH-TREE AREA
-// ------------------------------------------------------------
-
-var pixelAreaHa =
-  ee.Image.pixelArea()
-    .divide(10000);
-
-
-var baselineTreeArea =
-  pixelAreaHa
-
-    .updateMask(
-      baselineForestMask
-    )
-
-    .reduceRegion({
-
-      reducer:
-        ee.Reducer.sum(),
-
-      geometry:
-        aoi,
-
-      scale:
-        10,
-
-      maxPixels:
-        1e9
-
-    });
-
-
-print(
-  '2017 high-tree baseline area (ha):',
-  baselineTreeArea
-);
-
-
-// ------------------------------------------------------------
-// 16. CALCULATE CANDIDATE DISTURBANCE AREA
-// ------------------------------------------------------------
-
-var candidateArea =
-  pixelAreaHa
-
-    .updateMask(
-      candidateDisturbance
-    )
-
-    .reduceRegion({
-
-      reducer:
-        ee.Reducer.sum(),
-
-      geometry:
-        aoi,
-
-      scale:
-        10,
-
-      maxPixels:
-        1e9
-
-    });
-
-
-print(
-  'Candidate disturbance area (ha):',
-  candidateArea
-);
-
-
-// ------------------------------------------------------------
-// 17. CALCULATE REPEATED-DECLINE AREA
-// ------------------------------------------------------------
-
-var persistentArea =
-  pixelAreaHa
-
-    .updateMask(
-      persistentCandidate
-    )
-
-    .reduceRegion({
-
-      reducer:
-        ee.Reducer.sum(),
-
-      geometry:
-        aoi,
-
-      scale:
-        10,
-
-      maxPixels:
-        1e9
-
-    });
-
-
-print(
-  'Repeated-decline candidate area (ha):',
-  persistentArea
-);
-
-
-// ------------------------------------------------------------
-// 18. CREATE CANDIDATE SAMPLE PIXELS
-// ------------------------------------------------------------
-//
-// Randomly sample candidate disturbance pixels.
-//
-// These are NOT validation samples yet.
-//
-// They are only exploratory candidate locations
-// for inspecting probability trajectories.
+// 8. RECREATE SELECTED EXPLORATORY CANDIDATE POINT
 // ------------------------------------------------------------
 
 var candidateImage =
@@ -747,33 +382,18 @@ var candidateImage =
 var candidateSamples =
   candidateImage.sample({
 
-    region:
-      aoi,
+    region: aoi,
 
-    scale:
-      10,
+    scale: 10,
 
-    numPixels:
-      100,
+    numPixels: 100,
 
-    seed:
-      42,
+    seed: 42,
 
-    geometries:
-      true
+    geometries: true
 
   });
 
-
-print(
-  'Candidate disturbance sample pixels:',
-  candidateSamples
-);
-
-
-// ------------------------------------------------------------
-// 19. SORT CANDIDATES BY MAXIMUM TREE DROP
-// ------------------------------------------------------------
 
 var rankedCandidates =
   candidateSamples.sort(
@@ -781,47 +401,6 @@ var rankedCandidates =
     false
   );
 
-
-print(
-  'Candidate pixels ranked by tree decline:',
-  rankedCandidates
-);
-
-
-// ------------------------------------------------------------
-// 20. DISPLAY CANDIDATE SAMPLE POINTS
-// ------------------------------------------------------------
-
-Map.addLayer(
-
-  candidateSamples,
-
-  {
-    color:
-      'cyan'
-  },
-
-  'Candidate Sample Pixels',
-
-  false
-
-);
-
-
-// ------------------------------------------------------------
-// 21. SELECT ONE EXPLORATORY CANDIDATE POINT
-// ------------------------------------------------------------
-//
-// Take the sampled candidate with
-// the largest tree-probability decline.
-//
-// NOTE:
-// Because candidateSamples is a sample,
-// this may not be the absolute strongest pixel
-// in the entire protected area.
-//
-// It is simply a useful exploratory point.
-// ------------------------------------------------------------
 
 var candidatePointFeature =
   ee.Feature(
@@ -833,37 +412,50 @@ var candidatePoint =
   candidatePointFeature.geometry();
 
 
-print(
-  'Selected exploratory candidate:',
-  candidatePointFeature
-);
-
-
 Map.addLayer(
 
   candidatePoint,
 
-  {
-    color:
-      'cyan'
-  },
+  {color: 'cyan'},
 
   'Selected Candidate Point',
 
   true
-
 );
 
 
+print(
+  'Selected candidate:',
+  candidatePointFeature
+);
+
+
+// ============================================================
+// PART A
+// CANDIDATE-POINT ATTRIBUTION
+// ============================================================
+
+
 // ------------------------------------------------------------
-// 22. TREE-PROBABILITY TIME SERIES AT CANDIDATE POINT
+// 9. ALL IMPORTANT PROBABILITIES THROUGH TIME
 // ------------------------------------------------------------
 
-var candidateTreeChart =
+var candidateChart =
   ui.Chart.image.series({
 
     imageCollection:
-      annualTrees,
+      annualDW9.select([
+
+        'trees',
+        'water',
+        'grass',
+        'flooded_vegetation',
+        'crops',
+        'shrub_and_scrub',
+        'built',
+        'bare'
+
+      ]),
 
     region:
       candidatePoint,
@@ -883,17 +475,205 @@ var candidateTreeChart =
   .setOptions({
 
     title:
-      'Tree Probability at Candidate Disturbance Pixel',
+      'Dynamic World Probabilities — Candidate Disturbance Pixel',
 
     hAxis: {
-      title:
-        'Year'
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title: 'Probability',
+
+      viewWindow: {
+        min: 0,
+        max: 1
+      }
+
+    },
+
+    lineWidth: 2,
+
+    pointSize: 5
+
+  });
+
+
+print(candidateChart);
+
+
+// ------------------------------------------------------------
+// 10. PRINT YEAR-BY-YEAR CANDIDATE VALUES
+// ------------------------------------------------------------
+
+var candidateSeries =
+  ee.FeatureCollection(
+
+    annualDW9.map(function(image) {
+
+      var values =
+        image.reduceRegion({
+
+          reducer:
+            ee.Reducer.mean(),
+
+          geometry:
+            candidatePoint,
+
+          scale:
+            10,
+
+          bestEffort:
+            true
+
+        });
+
+
+      return ee.Feature(
+        null,
+        {
+
+          year:
+            image.get('year'),
+
+          trees:
+            values.get('trees'),
+
+          water:
+            values.get('water'),
+
+          grass:
+            values.get('grass'),
+
+          flooded_vegetation:
+            values.get(
+              'flooded_vegetation'
+            ),
+
+          crops:
+            values.get('crops'),
+
+          shrub_and_scrub:
+            values.get(
+              'shrub_and_scrub'
+            ),
+
+          built:
+            values.get('built'),
+
+          bare:
+            values.get('bare')
+
+        }
+      );
+
+    })
+
+  );
+
+
+print(
+  'Candidate annual probability table:',
+  candidateSeries
+);
+
+
+// ------------------------------------------------------------
+// 11. FOCUS ON 2023, 2024 AND 2025
+// ------------------------------------------------------------
+
+var candidateRecent =
+  candidateSeries.filter(
+
+    ee.Filter.gte(
+      'year',
+      2023
+    )
+
+  );
+
+
+print(
+  'Candidate values — 2023 to 2025:',
+  candidateRecent
+);
+
+
+// ============================================================
+// PART B
+// PERSISTENT-CANDIDATE PATCH ANALYSIS
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 12. MASK ANNUAL IMAGES TO PERSISTENT CANDIDATES
+// ------------------------------------------------------------
+
+var persistentAnnual =
+  annualDW9.map(function(image) {
+
+    return image
+      .updateMask(
+        persistentCandidate
+      )
+      .copyProperties(
+        image,
+        [
+          'year',
+          'system:time_start'
+        ]
+      );
+
+  });
+
+
+// ------------------------------------------------------------
+// 13. MEAN TRAJECTORY ACROSS ALL PERSISTENT PIXELS
+// ------------------------------------------------------------
+
+var persistentPatchChart =
+  ui.Chart.image.series({
+
+    imageCollection:
+      persistentAnnual.select([
+
+        'trees',
+        'water',
+        'flooded_vegetation',
+        'crops',
+        'shrub_and_scrub',
+        'bare'
+
+      ]),
+
+    region:
+      aoi,
+
+    reducer:
+      ee.Reducer.mean(),
+
+    scale:
+      10,
+
+    xProperty:
+      'system:time_start'
+
+  })
+
+
+  .setOptions({
+
+    title:
+      'Mean Probability Trajectory — Persistent Candidate Pixels',
+
+    hAxis: {
+      title: 'Year'
     },
 
     vAxis: {
 
       title:
-        'Tree Probability',
+        'Mean Probability',
 
       viewWindow: {
         min: 0,
@@ -906,140 +686,652 @@ var candidateTreeChart =
       2,
 
     pointSize:
-      6
+      5
 
   });
 
 
 print(
-  candidateTreeChart
+  persistentPatchChart
 );
 
 
-// ------------------------------------------------------------
-// 23. PRINT YEAR-BY-YEAR TREE VALUES
-// ------------------------------------------------------------
-
-var candidateTreeSeries =
-  ee.FeatureCollection(
-
-    annualTrees.map(
-      function(image) {
-
-        var value =
-          image.reduceRegion({
-
-            reducer:
-              ee.Reducer.mean(),
-
-            geometry:
-              candidatePoint,
-
-            scale:
-              10,
-
-            bestEffort:
-              true
-
-          });
-
-
-        return ee.Feature(
-          null,
-          {
-
-            year:
-              image.get('year'),
-
-            trees:
-              value.get('trees')
-
-          }
-        );
-
-      }
-    )
-
-  );
-
-
-print(
-  'Candidate annual tree probabilities:',
-  candidateTreeSeries
-);
-
-
-print(
-  'Candidate tree probability list:',
-  candidateTreeSeries
-    .aggregate_array(
-      'trees'
-    )
-);
+// ============================================================
+// PART C
+// PRE- VS POST-DISTURBANCE COMPARISON
+// ============================================================
 
 
 // ------------------------------------------------------------
-// 24. 2017 VS 2025 TREE CHANGE
+// 14. GET 2023, 2024, 2025 ANNUAL IMAGES
 // ------------------------------------------------------------
 
-var tree2025 =
-  ee.Image(
+var image2023 = ee.Image(
 
-    annualTrees
-      .filter(
-        ee.Filter.eq(
-          'year',
-          2025
-        )
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2023
       )
-      .first()
+    )
+    .first()
 
-  );
+);
 
 
-var change2017_2025 =
-  tree2025
+var image2024 = ee.Image(
+
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2024
+      )
+    )
+    .first()
+
+);
+
+
+var image2025 = ee.Image(
+
+  annualDW9
+    .filter(
+      ee.Filter.eq(
+        'year',
+        2025
+      )
+    )
+    .first()
+
+);
+
+
+// ------------------------------------------------------------
+// 15. CREATE POST-DISTURBANCE MEAN
+// ------------------------------------------------------------
+//
+// Instead of relying only on 2025,
+// average 2024 and 2025.
+//
+// This gives more emphasis to persistent change.
+//
+
+var postDisturbance =
+  ee.ImageCollection.fromImages([
+
+    image2024,
+
+    image2025
+
+  ])
+
+  .mean();
+
+
+// ------------------------------------------------------------
+// 16. TREE CHANGE: POST - 2023
+// ------------------------------------------------------------
+
+var treeChange =
+  postDisturbance
+    .select('trees')
 
     .subtract(
-      baselineTree
+      image2023.select('trees')
     )
 
     .rename(
-      'tree_change_2017_2025'
+      'tree_change'
     )
 
     .updateMask(
-      baselineForestMask
+      persistentCandidate
     );
 
 
 Map.addLayer(
 
-  change2017_2025,
+  treeChange,
 
   {
 
-    min:
-      -0.60,
+    min: -0.60,
 
-    max:
-      0.60,
+    max: 0.20,
 
     palette: [
       'darkred',
       'red',
       'orange',
       'white',
-      'lightgreen',
-      'darkgreen'
+      'green'
     ]
 
   },
 
-  'Tree Change 2017-2025',
+  'Tree Change: 2023 → mean(2024-2025)',
+
+  true
+);
+
+
+// ------------------------------------------------------------
+// 17. CALCULATE CHANGES IN POSSIBLE ATTRIBUTION CLASSES
+// ------------------------------------------------------------
+
+var attributionBands = [
+
+  'water',
+
+  'grass',
+
+  'flooded_vegetation',
+
+  'crops',
+
+  'shrub_and_scrub',
+
+  'built',
+
+  'bare'
+
+];
+
+
+var classChanges =
+  postDisturbance
+
+    .select(
+      attributionBands
+    )
+
+    .subtract(
+      image2023.select(
+        attributionBands
+      )
+    )
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+print(
+  'Post-minus-pre class change image:',
+  classChanges
+);
+
+
+// ------------------------------------------------------------
+// 18. MEAN CLASS CHANGES ACROSS PERSISTENT PIXELS
+// ------------------------------------------------------------
+//
+// Positive = class probability increased.
+//
+// Negative = class probability decreased.
+//
+
+var meanClassChanges =
+  classChanges.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean(),
+
+    geometry:
+      aoi,
+
+    scale:
+      10,
+
+    maxPixels:
+      1e9
+
+  });
+
+
+print(
+  'MEAN CLASS CHANGES across persistent candidates:',
+  meanClassChanges
+);
+
+
+// ------------------------------------------------------------
+// 19. VISUALIZE INDIVIDUAL CLASS GAINS
+// ------------------------------------------------------------
+
+Map.addLayer(
+
+  classChanges.select('water'),
+
+  {
+
+    min: -0.30,
+
+    max: 0.30,
+
+    palette: [
+      'red',
+      'white',
+      'blue'
+    ]
+
+  },
+
+  'Water Change — Post vs 2023',
 
   false
+);
 
+
+Map.addLayer(
+
+  classChanges.select(
+    'flooded_vegetation'
+  ),
+
+  {
+
+    min: -0.30,
+
+    max: 0.30,
+
+    palette: [
+      'red',
+      'white',
+      'green'
+    ]
+
+  },
+
+  'Flooded Vegetation Change — Post vs 2023',
+
+  false
+);
+
+
+Map.addLayer(
+
+  classChanges.select('crops'),
+
+  {
+
+    min: -0.30,
+
+    max: 0.30,
+
+    palette: [
+      'red',
+      'white',
+      'yellow'
+    ]
+
+  },
+
+  'Crops Change — Post vs 2023',
+
+  false
+);
+
+
+Map.addLayer(
+
+  classChanges.select(
+    'shrub_and_scrub'
+  ),
+
+  {
+
+    min: -0.30,
+
+    max: 0.30,
+
+    palette: [
+      'red',
+      'white',
+      'green'
+    ]
+
+  },
+
+  'Shrub/Scrub Change — Post vs 2023',
+
+  false
+);
+
+
+Map.addLayer(
+
+  classChanges.select('bare'),
+
+  {
+
+    min: -0.30,
+
+    max: 0.30,
+
+    palette: [
+      'green',
+      'white',
+      'brown'
+    ]
+
+  },
+
+  'Bare Change — Post vs 2023',
+
+  false
+);
+
+
+// ============================================================
+// PART D
+// EXPLORATORY DOMINANT-TRANSITION ATTRIBUTION
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 20. FIND CLASS WITH LARGEST PROBABILITY INCREASE
+// ------------------------------------------------------------
+//
+// attributionBands order:
+//
+// 0 = water
+// 1 = grass
+// 2 = flooded_vegetation
+// 3 = crops
+// 4 = shrub_and_scrub
+// 5 = built
+// 6 = bare
+//
+// We convert to codes 1–7 below.
+// ------------------------------------------------------------
+
+var dominantGainCode =
+  classChanges
+
+    .toArray()
+
+    .arrayArgmax()
+
+    .arrayGet([0])
+
+    .add(1)
+
+    .rename(
+      'dominant_gain_class'
+    )
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+print(
+  'Dominant gain class codes:',
+  '1=water, 2=grass, 3=flooded vegetation, ' +
+  '4=crops, 5=shrub/scrub, 6=built, 7=bare'
+);
+
+
+Map.addLayer(
+
+  dominantGainCode,
+
+  {
+
+    min: 1,
+
+    max: 7,
+
+    palette: [
+      'blue',       // 1 water
+      'lightgreen', // 2 grass
+      'cyan',       // 3 flooded vegetation
+      'yellow',     // 4 crops
+      'green',      // 5 shrub/scrub
+      'red',        // 6 built
+      'brown'       // 7 bare
+    ]
+
+  },
+
+  'Dominant Probability Gain Class',
+
+  true
+);
+
+
+// ------------------------------------------------------------
+// 21. DOMINANT GAIN CLASS AT SELECTED CANDIDATE POINT
+// ------------------------------------------------------------
+
+var dominantAtPoint =
+  dominantGainCode.reduceRegion({
+
+    reducer:
+      ee.Reducer.first(),
+
+    geometry:
+      candidatePoint,
+
+    scale:
+      10,
+
+    bestEffort:
+      true
+
+  });
+
+
+print(
+  'Dominant post-disturbance gain class at candidate point:',
+  dominantAtPoint
+);
+
+
+// ============================================================
+// PART E
+// SENTINEL-2 VISUAL CHECK
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 22. LOAD SENTINEL-2 + CLOUD SCORE+
+// ------------------------------------------------------------
+
+var s2 = ee.ImageCollection(
+    'COPERNICUS/S2_SR_HARMONIZED'
+  )
+  .filterBounds(aoi)
+  .filterDate(
+    '2023-01-01',
+    '2026-01-01'
+  );
+
+
+var csPlus = ee.ImageCollection(
+  'GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED'
+);
+
+
+// Link cloud-quality score to Sentinel-2 images.
+var s2Linked =
+  s2.linkCollection(
+    csPlus,
+    ['cs_cdf']
+  );
+
+
+// Mask lower-quality observations.
+var s2Clean =
+  s2Linked.map(function(image) {
+
+    return image
+      .updateMask(
+        image
+          .select('cs_cdf')
+          .gte(0.60)
+      );
+
+  });
+
+
+// ------------------------------------------------------------
+// 23. CREATE NOV-DEC SENTINEL-2 COMPOSITES
+// ------------------------------------------------------------
+
+var getS2Composite =
+  function(year) {
+
+    var start =
+      ee.Date.fromYMD(
+        year,
+        11,
+        1
+      );
+
+    var end =
+      ee.Date.fromYMD(
+        year + 1,
+        1,
+        1
+      );
+
+    return s2Clean
+
+      .filterDate(
+        start,
+        end
+      )
+
+      .median()
+
+      .clip(aoi);
+
+  };
+
+
+var s2_2023 =
+  getS2Composite(2023);
+
+
+var s2_2024 =
+  getS2Composite(2024);
+
+
+var s2_2025 =
+  getS2Composite(2025);
+
+
+// ------------------------------------------------------------
+// 24. TRUE-COLOR VISUALIZATION
+// ------------------------------------------------------------
+
+var trueColor = {
+
+  bands: [
+    'B4',
+    'B3',
+    'B2'
+  ],
+
+  min: 0,
+
+  max: 3000
+
+};
+
+
+Map.addLayer(
+
+  s2_2023,
+
+  trueColor,
+
+  'Sentinel-2 True Color — Nov-Dec 2023',
+
+  false
+);
+
+
+Map.addLayer(
+
+  s2_2024,
+
+  trueColor,
+
+  'Sentinel-2 True Color — Nov-Dec 2024',
+
+  false
+);
+
+
+Map.addLayer(
+
+  s2_2025,
+
+  trueColor,
+
+  'Sentinel-2 True Color — Nov-Dec 2025',
+
+  false
+);
+
+
+// ------------------------------------------------------------
+// 25. FALSE-COLOR VEGETATION VISUALIZATION
+// ------------------------------------------------------------
+
+var falseColor = {
+
+  bands: [
+    'B8',
+    'B4',
+    'B3'
+  ],
+
+  min: 0,
+
+  max: 4000
+
+};
+
+
+Map.addLayer(
+
+  s2_2023,
+
+  falseColor,
+
+  'Sentinel-2 False Color — 2023',
+
+  false
+);
+
+
+Map.addLayer(
+
+  s2_2024,
+
+  falseColor,
+
+  'Sentinel-2 False Color — 2024',
+
+  false
+);
+
+
+Map.addLayer(
+
+  s2_2025,
+
+  falseColor,
+
+  'Sentinel-2 False Color — 2025',
+
+  false
 );
 
 
@@ -1047,69 +1339,66 @@ Map.addLayer(
 // INTERPRETATION GUIDE
 // ============================================================
 //
-// 2017 High-Tree Baseline
-// -----------------------
-// Shows pixels that were strongly tree-like
-// in the baseline year.
+// STEP 1
+// ------
+// Confirm that tree probability declines strongly in
+// 2024 and 2025 at the selected candidate.
 //
 //
 //
-// Maximum Tree Probability Drop
-// -----------------------------
-// White / low values:
-// little decline.
+// STEP 2
+// ------
+// Examine which classes increase:
 //
-// Orange / red:
-// larger decline.
+// tree ↓ + water ↑
+// → possible inundation / erosion / water transition
 //
+// tree ↓ + bare ↑
+// → possible exposed surface / erosion / clearing
 //
+// tree ↓ + crops ↑
+// → possible conversion to agricultural-like cover
 //
-// Candidate Tree Disturbance
-// --------------------------
-// Red pixels:
+// tree ↓ + shrub/scrub ↑
+// → possible degradation / canopy opening / succession
 //
-// 2017 trees > 0.60
-//
-// AND
-//
-// maximum later decline > 0.25.
-//
-//
-//
-// Repeated Tree-Decline Candidate
-// --------------------------------
-// Magenta pixels:
-//
-// significant decline occurred
-// in at least two post-baseline years.
-//
-// These are stronger disturbance candidates,
-// but still require validation.
+// tree ↓ + flooded vegetation ↑
+// → possible wetland / inundated vegetation transition
 //
 //
 //
-// Year of Maximum Tree Drop
-// -------------------------
-// Shows WHEN the strongest probability decline
-// occurred at each baseline tree pixel.
+// STEP 3
+// ------
+// Check whether the same relationship occurs across
+// the persistent candidate patches, not just one pixel.
+//
+//
+//
+// STEP 4
+// ------
+// Compare Sentinel-2 imagery:
+//
+// 2023 = pre-decline condition
+// 2024 = first strong decline year
+// 2025 = persistent / stronger decline
 //
 //
 //
 // IMPORTANT
 // ---------
-// A decline in Dynamic World tree probability
-// is NOT automatically proof of deforestation.
+// The "dominant gain class" is an exploratory
+// attribution indicator.
 //
-// Possible explanations include:
+// It does NOT by itself prove:
+// erosion,
+// deforestation,
+// agricultural conversion,
+// flooding,
+// or degradation.
 //
-// - real canopy disturbance
-// - temporary inundation
-// - seasonal / phenological variation
-// - shoreline dynamics
-// - cloud / observation effects
-// - classification uncertainty
-//
-// Candidate pixels must therefore be checked
-// spatially and temporally before being interpreted
-// as actual forest disturbance.
+// Final interpretation requires:
+// spatial consistency,
+// temporal persistence,
+// Sentinel-2 visual evidence,
+// and preferably external/reference information.
 // ============================================================
