@@ -631,35 +631,93 @@ var persistentAnnual =
 // 13. MEAN TRAJECTORY ACROSS ALL PERSISTENT PIXELS
 // ------------------------------------------------------------
 
-var persistentPatchChart =
-  ui.Chart.image.series({
+// ------------------------------------------------------------
+// REPLACEMENT:
+// MEAN TRAJECTORY ACROSS PERSISTENT CANDIDATE PIXELS
+// ------------------------------------------------------------
 
-    imageCollection:
-      persistentAnnual.select([
+var trajectoryBands = [
+  'trees',
+  'water',
+  'flooded_vegetation',
+  'crops',
+  'shrub_and_scrub',
+  'bare'
+];
 
-        'trees',
-        'water',
-        'flooded_vegetation',
-        'crops',
-        'shrub_and_scrub',
-        'bare'
 
-      ]),
+var persistentSeries = ee.FeatureCollection(
 
-    region:
-      aoi,
+  annualDW9.map(function(image) {
 
-    reducer:
-      ee.Reducer.mean(),
+    var stats = image
 
-    scale:
-      10,
+      .select(trajectoryBands)
 
-    xProperty:
-      'system:time_start'
+      .updateMask(
+        persistentCandidate
+      )
+
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.mean(),
+
+        geometry:
+          aoi,
+
+        scale:
+          10,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+    return ee.Feature(
+      null,
+      stats
+    )
+
+    .set(
+      'year',
+      image.get('year')
+    )
+
+    .set(
+      'system:time_start',
+      image.get('system:time_start')
+    );
 
   })
 
+);
+
+
+print(
+  'Annual mean probabilities — persistent candidate pixels:',
+  persistentSeries
+);
+
+
+var persistentPatchChart =
+  ui.Chart.feature.byFeature(
+
+    persistentSeries,
+
+    'year',
+
+    trajectoryBands
+
+  )
+
+  .setChartType(
+    'LineChart'
+  )
 
   .setOptions({
 
@@ -1402,3 +1460,1292 @@ Map.addLayer(
 // Sentinel-2 visual evidence,
 // and preferably external/reference information.
 // ============================================================
+
+// ============================================================
+// PART F
+// NDVI + MNDWI VERIFICATION
+// ============================================================
+//
+// PURPOSE:
+//
+// NDVI  = vegetation greenness / vigor
+// MNDWI = surface-water / wetness-related signal
+//
+// We test whether the Dynamic World tree-probability decline
+// is supported by independent Sentinel-2 spectral indices.
+//
+// ------------------------------------------------------------
+
+
+// ------------------------------------------------------------
+// 26. FUNCTION TO ADD NDVI + MNDWI
+// ------------------------------------------------------------
+//
+// Sentinel-2:
+// NDVI  = (B8 - B4) / (B8 + B4)
+//
+// MNDWI = (B3 - B11) / (B3 + B11)
+//
+// B8  = Near Infrared
+// B4  = Red
+// B3  = Green
+// B11 = SWIR
+// ------------------------------------------------------------
+
+var addIndices = function(image) {
+
+  var ndvi = image
+    .normalizedDifference([
+      'B8',
+      'B4'
+    ])
+    .rename('NDVI');
+
+
+  var mndwi = image
+    .normalizedDifference([
+      'B3',
+      'B11'
+    ])
+    .rename('MNDWI');
+
+
+  return image
+    .addBands(ndvi)
+    .addBands(mndwi);
+
+};
+
+
+// ------------------------------------------------------------
+// 27. ADD INDICES TO 2023, 2024, 2025 COMPOSITES
+// ------------------------------------------------------------
+
+var index2023 = addIndices(
+  s2_2023
+);
+
+var index2024 = addIndices(
+  s2_2024
+);
+
+var index2025 = addIndices(
+  s2_2025
+);
+
+
+// ------------------------------------------------------------
+// 28. VISUALIZE NDVI
+// ------------------------------------------------------------
+
+var ndviVis = {
+
+  min: 0,
+
+  max: 0.8,
+
+  palette: [
+    'white',
+    'yellow',
+    'lightgreen',
+    'darkgreen'
+  ]
+
+};
+
+
+Map.addLayer(
+  index2023.select('NDVI'),
+  ndviVis,
+  'NDVI — 2023',
+  false
+);
+
+
+Map.addLayer(
+  index2024.select('NDVI'),
+  ndviVis,
+  'NDVI — 2024',
+  false
+);
+
+
+Map.addLayer(
+  index2025.select('NDVI'),
+  ndviVis,
+  'NDVI — 2025',
+  false
+);
+
+
+// ------------------------------------------------------------
+// 29. VISUALIZE MNDWI
+// ------------------------------------------------------------
+
+var mndwiVis = {
+
+  min: -0.5,
+
+  max: 0.5,
+
+  palette: [
+    'brown',
+    'white',
+    'lightblue',
+    'blue'
+  ]
+
+};
+
+
+Map.addLayer(
+  index2023.select('MNDWI'),
+  mndwiVis,
+  'MNDWI — 2023',
+  false
+);
+
+
+Map.addLayer(
+  index2024.select('MNDWI'),
+  mndwiVis,
+  'MNDWI — 2024',
+  false
+);
+
+
+Map.addLayer(
+  index2025.select('MNDWI'),
+  mndwiVis,
+  'MNDWI — 2025',
+  false
+);
+
+
+// ============================================================
+// PART G
+// SELECTED CANDIDATE POINT
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 30. EXTRACT NDVI + MNDWI AT CANDIDATE POINT
+// ------------------------------------------------------------
+
+var candidateIndexSeries =
+  ee.FeatureCollection([
+
+    ee.Feature(
+      null,
+      index2023
+        .select([
+          'NDVI',
+          'MNDWI'
+        ])
+        .reduceRegion({
+
+          reducer:
+            ee.Reducer.mean(),
+
+          geometry:
+            candidatePoint,
+
+          scale:
+            10,
+
+          bestEffort:
+            true
+
+        })
+    )
+    .set('year', 2023),
+
+
+    ee.Feature(
+      null,
+      index2024
+        .select([
+          'NDVI',
+          'MNDWI'
+        ])
+        .reduceRegion({
+
+          reducer:
+            ee.Reducer.mean(),
+
+          geometry:
+            candidatePoint,
+
+          scale:
+            10,
+
+          bestEffort:
+            true
+
+        })
+    )
+    .set('year', 2024),
+
+
+    ee.Feature(
+      null,
+      index2025
+        .select([
+          'NDVI',
+          'MNDWI'
+        ])
+        .reduceRegion({
+
+          reducer:
+            ee.Reducer.mean(),
+
+          geometry:
+            candidatePoint,
+
+          scale:
+            10,
+
+          bestEffort:
+            true
+
+        })
+    )
+    .set('year', 2025)
+
+  ]);
+
+
+print(
+  'Candidate-point NDVI + MNDWI:',
+  candidateIndexSeries
+);
+
+
+// ------------------------------------------------------------
+// 31. CANDIDATE-POINT INDEX CHART
+// ------------------------------------------------------------
+
+var candidateIndexChart =
+  ui.Chart.feature.byFeature(
+
+    candidateIndexSeries,
+
+    'year',
+
+    [
+      'NDVI',
+      'MNDWI'
+    ]
+
+  )
+
+  .setChartType(
+    'LineChart'
+  )
+
+  .setOptions({
+
+    title:
+      'NDVI and MNDWI — Candidate Disturbance Pixel',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Index Value',
+
+      viewWindow: {
+        min: -1,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      7
+
+  });
+
+
+print(
+  candidateIndexChart
+);
+
+
+// ============================================================
+// PART H
+// PERSISTENT-CANDIDATE PATCH
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 32. FUNCTION FOR PATCH-WIDE INDEX STATISTICS
+// ------------------------------------------------------------
+
+var getPatchStats =
+  function(image, year) {
+
+    var stats = image
+
+      .select([
+        'NDVI',
+        'MNDWI'
+      ])
+
+      .updateMask(
+        persistentCandidate
+      )
+
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.mean(),
+
+        geometry:
+          aoi,
+
+        scale:
+          10,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+    return ee.Feature(
+      null,
+      stats
+    )
+    .set(
+      'year',
+      year
+    );
+
+  };
+
+
+// ------------------------------------------------------------
+// 33. CREATE PATCH-WIDE INDEX SERIES
+// ------------------------------------------------------------
+
+var patchIndexSeries =
+  ee.FeatureCollection([
+
+    getPatchStats(
+      index2023,
+      2023
+    ),
+
+    getPatchStats(
+      index2024,
+      2024
+    ),
+
+    getPatchStats(
+      index2025,
+      2025
+    )
+
+  ]);
+
+
+print(
+  'Persistent-candidate patch NDVI + MNDWI:',
+  patchIndexSeries
+);
+
+
+// ------------------------------------------------------------
+// 34. PATCH-WIDE INDEX CHART
+// ------------------------------------------------------------
+
+var patchIndexChart =
+  ui.Chart.feature.byFeature(
+
+    patchIndexSeries,
+
+    'year',
+
+    [
+      'NDVI',
+      'MNDWI'
+    ]
+
+  )
+
+  .setChartType(
+    'LineChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Mean NDVI and MNDWI — Persistent Candidate Pixels',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Mean Index Value',
+
+      viewWindow: {
+        min: -1,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      7
+
+  });
+
+
+print(
+  patchIndexChart
+);
+
+
+// ============================================================
+// PART I
+// PRE- VS POST-DISTURBANCE INDEX CHANGE
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 35. CREATE MEAN POST-DISTURBANCE NDVI + MNDWI
+// ------------------------------------------------------------
+//
+// Mean of 2024 and 2025 index images.
+//
+// ------------------------------------------------------------
+
+var postIndices =
+  ee.ImageCollection.fromImages([
+
+    index2024.select([
+      'NDVI',
+      'MNDWI'
+    ]),
+
+    index2025.select([
+      'NDVI',
+      'MNDWI'
+    ])
+
+  ])
+  .mean();
+
+
+// ------------------------------------------------------------
+// 36. NDVI CHANGE:
+// POST(2024–2025) - 2023
+// ------------------------------------------------------------
+
+var ndviChange =
+  postIndices
+    .select('NDVI')
+
+    .subtract(
+      index2023.select('NDVI')
+    )
+
+    .rename(
+      'NDVI_change'
+    )
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+Map.addLayer(
+
+  ndviChange,
+
+  {
+
+    min:
+      -0.5,
+
+    max:
+      0.5,
+
+    palette: [
+      'red',
+      'orange',
+      'white',
+      'lightgreen',
+      'darkgreen'
+    ]
+
+  },
+
+  'NDVI Change: 2023 → mean(2024-2025)',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 37. MNDWI CHANGE:
+// POST(2024–2025) - 2023
+// ------------------------------------------------------------
+
+var mndwiChange =
+  postIndices
+    .select('MNDWI')
+
+    .subtract(
+      index2023.select('MNDWI')
+    )
+
+    .rename(
+      'MNDWI_change'
+    )
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+Map.addLayer(
+
+  mndwiChange,
+
+  {
+
+    min:
+      -0.5,
+
+    max:
+      0.5,
+
+    palette: [
+      'brown',
+      'white',
+      'lightblue',
+      'blue'
+    ]
+
+  },
+
+  'MNDWI Change: 2023 → mean(2024-2025)',
+
+  true
+
+);
+
+
+// ------------------------------------------------------------
+// 38. MEAN INDEX CHANGES ACROSS PERSISTENT PATCHES
+// ------------------------------------------------------------
+
+var meanNDVIChange =
+  ndviChange.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean(),
+
+    geometry:
+      aoi,
+
+    scale:
+      10,
+
+    maxPixels:
+      1e9,
+
+    tileScale:
+      4
+
+  });
+
+
+var meanMNDWIChange =
+  mndwiChange.reduceRegion({
+
+    reducer:
+      ee.Reducer.mean(),
+
+    geometry:
+      aoi,
+
+    scale:
+      10,
+
+    maxPixels:
+      1e9,
+
+    tileScale:
+      4
+
+  });
+
+
+print(
+  'Mean NDVI change across persistent candidates:',
+  meanNDVIChange
+);
+
+
+print(
+  'Mean MNDWI change across persistent candidates:',
+  meanMNDWIChange
+);
+
+
+// ============================================================
+// INTERPRETATION GUIDE
+// ============================================================
+//
+// CASE A:
+//
+// Trees ↓
+// NDVI ↓
+// MNDWI ↑
+//
+// → strongest support for transition from
+//   tree-dominated vegetation toward wetter /
+//   inundated / water-associated conditions.
+//
+//
+//
+// CASE B:
+//
+// Trees ↓
+// NDVI ↓
+// MNDWI ≈ stable
+//
+// → vegetation degradation / canopy reduction
+//   may be more plausible than inundation.
+//
+//
+//
+// CASE C:
+//
+// Trees ↓
+// NDVI ≈ stable
+// MNDWI ↑
+//
+// → vegetation may still be present,
+//   but surface wetness / inundation increased.
+//
+//
+//
+// CASE D:
+//
+// Trees ↓↓↓
+// NDVI ≈ stable
+// MNDWI ≈ stable
+//
+// → Dynamic World class-probability instability
+//   becomes a stronger possibility.
+//
+//
+//
+// IMPORTANT:
+//
+// NDVI and MNDWI are supporting indicators,
+// not direct proof of disturbance cause.
+//
+// Coastal tidal conditions,
+// soil moisture,
+// seasonal variation,
+// composite dates,
+// and cloud masking
+// can influence both indices.
+// ============================================================
+
+// ============================================================
+// PART J
+// FULL NDVI + MNDWI TRAJECTORY: 2017–2025
+// ============================================================
+//
+// PURPOSE:
+//
+// Verify whether the long-term decline in Dynamic World
+// tree probability is also reflected in independent
+// Sentinel-2 spectral indices.
+//
+// IMPORTANT:
+//
+// Sentinel-2 SR Harmonized begins in 2017.
+// Therefore, this verification uses 2017–2025.
+//
+// ------------------------------------------------------------
+
+
+// ------------------------------------------------------------
+// 39. LOAD LONG-TERM SENTINEL-2 SR COLLECTION
+// ------------------------------------------------------------
+
+var s2Long = ee.ImageCollection(
+    'COPERNICUS/S2_SR_HARMONIZED'
+  )
+  .filterBounds(aoi)
+  .filterDate(
+    '2017-01-01',
+    '2026-01-01'
+  );
+
+
+var csPlusLong = ee.ImageCollection(
+  'GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED'
+);
+
+
+// Link Cloud Score+ quality band
+var s2LongLinked =
+  s2Long.linkCollection(
+    csPlusLong,
+    ['cs_cdf']
+  );
+
+
+// Cloud / poor-quality pixel masking
+var s2LongClean =
+  s2LongLinked.map(function(image) {
+
+    return image.updateMask(
+
+      image
+        .select('cs_cdf')
+        .gte(0.60)
+
+    );
+
+  });
+
+
+// ------------------------------------------------------------
+// 40. FUNCTION TO ADD NDVI + MNDWI
+// ------------------------------------------------------------
+
+var addLongIndices = function(image) {
+
+  var ndvi = image
+    .normalizedDifference([
+      'B8',
+      'B4'
+    ])
+    .rename('NDVI');
+
+
+  var mndwi = image
+    .normalizedDifference([
+      'B3',
+      'B11'
+    ])
+    .rename('MNDWI');
+
+
+  return image
+    .addBands(ndvi)
+    .addBands(mndwi);
+
+};
+
+
+// ------------------------------------------------------------
+// 41. CREATE YEAR LIST
+// ------------------------------------------------------------
+
+var indexYears =
+  ee.List.sequence(
+    2017,
+    2025
+  );
+
+
+print(
+  'Sentinel-2 index years:',
+  indexYears
+);
+
+
+// ------------------------------------------------------------
+// 42. CREATE ONE NOV-DEC COMPOSITE PER YEAR
+// ------------------------------------------------------------
+//
+// Workflow:
+//
+// yearly Sentinel-2 observations
+//        ↓
+// cloud-quality masking
+//        ↓
+// median reflectance composite
+//        ↓
+// NDVI + MNDWI
+//
+// This follows the same logic used previously
+// for the 2023–2025 verification.
+// ------------------------------------------------------------
+
+var annualIndexCollection =
+  ee.ImageCollection.fromImages(
+
+    indexYears.map(function(year) {
+
+      year = ee.Number(year);
+
+
+      var start =
+        ee.Date.fromYMD(
+          year,
+          11,
+          1
+        );
+
+
+      var end =
+        ee.Date.fromYMD(
+          year.add(1),
+          1,
+          1
+        );
+
+
+      var yearlyS2 =
+        s2LongClean.filterDate(
+          start,
+          end
+        );
+
+
+      // Annual Nov-Dec median reflectance composite
+      var annualComposite =
+        yearlyS2
+          .median()
+          .clip(aoi);
+
+
+      // Calculate NDVI + MNDWI
+      var annualIndices =
+        addLongIndices(
+          annualComposite
+        )
+        .select([
+          'NDVI',
+          'MNDWI'
+        ]);
+
+
+      return annualIndices
+
+        .set(
+          'year',
+          year
+        )
+
+        .set(
+          'system:time_start',
+          ee.Date.fromYMD(
+            year,
+            12,
+            1
+          ).millis()
+        )
+
+        .set(
+          'image_count',
+          yearlyS2.size()
+        );
+
+    })
+
+  );
+
+
+print(
+  'Annual NDVI + MNDWI collection:',
+  annualIndexCollection
+);
+
+
+// ------------------------------------------------------------
+// 43. CHECK SOURCE IMAGE COUNT EACH YEAR
+// ------------------------------------------------------------
+//
+// This is important because early Sentinel-2 SR
+// coverage may be lower than later years.
+// ------------------------------------------------------------
+
+var indexImageCounts =
+  ee.FeatureCollection(
+
+    annualIndexCollection.map(
+      function(image) {
+
+        return ee.Feature(
+          null,
+          {
+
+            year:
+              image.get('year'),
+
+            image_count:
+              image.get('image_count')
+
+          }
+        );
+
+      }
+    )
+
+  );
+
+
+print(
+  'Sentinel-2 observations used per year:',
+  indexImageCounts
+);
+
+
+// ============================================================
+// PART K
+// LONG-TERM TRAJECTORY AT SELECTED CANDIDATE POINT
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 44. EXTRACT INDEX VALUES AT CANDIDATE POINT
+// ------------------------------------------------------------
+//
+// Analysis scale = 20 m
+//
+// MNDWI uses B11, whose native spatial resolution
+// is 20 m. Therefore 20 m is used here as the
+// common analysis scale.
+// ------------------------------------------------------------
+
+var analysisScale = 20;
+
+
+var candidateLongSeries =
+  ee.FeatureCollection(
+
+    annualIndexCollection.map(
+      function(image) {
+
+        var values =
+          image.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              candidatePoint,
+
+            scale:
+              analysisScale,
+
+            bestEffort:
+              true
+
+          });
+
+
+        return ee.Feature(
+          null,
+          values
+        )
+
+        .set(
+          'year',
+          image.get('year')
+        )
+
+        .set(
+          'image_count',
+          image.get('image_count')
+        );
+
+      }
+    )
+
+  );
+
+
+print(
+  'Candidate-point NDVI + MNDWI — 2017–2025:',
+  candidateLongSeries
+);
+
+
+// ------------------------------------------------------------
+// 45. CANDIDATE-POINT LONG-TERM CHART
+// ------------------------------------------------------------
+
+var candidateLongChart =
+  ui.Chart.feature.byFeature(
+
+    candidateLongSeries,
+
+    'year',
+
+    [
+      'NDVI',
+      'MNDWI'
+    ]
+
+  )
+
+  .setChartType(
+    'LineChart'
+  )
+
+  .setOptions({
+
+    title:
+      'NDVI and MNDWI — Candidate Pixel (2017–2025)',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Index Value',
+
+      viewWindow: {
+        min: -1,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      6
+
+  });
+
+
+print(
+  candidateLongChart
+);
+
+
+// ============================================================
+// PART L
+// LONG-TERM TRAJECTORY ACROSS PERSISTENT CANDIDATE PATCHES
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 46. EXTRACT PATCH-WIDE ANNUAL MEAN INDICES
+// ------------------------------------------------------------
+
+var persistentLongSeries =
+  ee.FeatureCollection(
+
+    annualIndexCollection.map(
+      function(image) {
+
+        var stats =
+          image
+
+            .updateMask(
+              persistentCandidate
+            )
+
+            .reduceRegion({
+
+              reducer:
+                ee.Reducer.mean(),
+
+              geometry:
+                aoi,
+
+              scale:
+                analysisScale,
+
+              maxPixels:
+                1e9,
+
+              tileScale:
+                4
+
+            });
+
+
+        return ee.Feature(
+          null,
+          stats
+        )
+
+        .set(
+          'year',
+          image.get('year')
+        )
+
+        .set(
+          'image_count',
+          image.get('image_count')
+        );
+
+      }
+    )
+
+  );
+
+
+print(
+  'Persistent-candidate NDVI + MNDWI — 2017–2025:',
+  persistentLongSeries
+);
+
+
+// ------------------------------------------------------------
+// 47. PATCH-WIDE LONG-TERM CHART
+// ------------------------------------------------------------
+
+var persistentLongChart =
+  ui.Chart.feature.byFeature(
+
+    persistentLongSeries,
+
+    'year',
+
+    [
+      'NDVI',
+      'MNDWI'
+    ]
+
+  )
+
+  .setChartType(
+    'LineChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Mean NDVI and MNDWI — Persistent Candidate Pixels (2017–2025)',
+
+    hAxis: {
+      title: 'Year'
+    },
+
+    vAxis: {
+
+      title:
+        'Mean Index Value',
+
+      viewWindow: {
+        min: -1,
+        max: 1
+      }
+
+    },
+
+    lineWidth:
+      2,
+
+    pointSize:
+      6
+
+  });
+
+
+print(
+  persistentLongChart
+);
+
+
+// ------------------------------------------------------------
+// 48. PRINT CLEAN VALUE LISTS
+// ------------------------------------------------------------
+
+print(
+  'Candidate years:',
+  candidateLongSeries
+    .aggregate_array('year')
+);
+
+
+print(
+  'Candidate NDVI:',
+  candidateLongSeries
+    .aggregate_array('NDVI')
+);
+
+
+print(
+  'Candidate MNDWI:',
+  candidateLongSeries
+    .aggregate_array('MNDWI')
+);
+
+
+print(
+  'Persistent patch years:',
+  persistentLongSeries
+    .aggregate_array('year')
+);
+
+
+print(
+  'Persistent patch NDVI:',
+  persistentLongSeries
+    .aggregate_array('NDVI')
+);
+
+
+print(
+  'Persistent patch MNDWI:',
+  persistentLongSeries
+    .aggregate_array('MNDWI')
+);
+
+
+// ============================================================
+// INTERPRETATION TARGET
+// ============================================================
+//
+// We want to know:
+//
+// Was 2017–2021 relatively stable?
+//
+// Did NDVI begin declining around the same period
+// as Dynamic World tree probability?
+//
+// Did MNDWI become progressively less negative
+// or positive as tree probability declined?
+//
+// Example of strong supporting evidence:
+//
+// Tree probability:
+// 0.69 → 0.58 → 0.39 → 0.20 → 0.14
+//
+// NDVI:
+// 0.60 → 0.56 → 0.48 → 0.35 → 0.25
+//
+// MNDWI:
+// -0.40 → -0.38 → -0.30 → -0.20 → -0.10
+//
+// This would support a progressive transition toward
+// lower vegetation vigor and wetter surface conditions.
+//
+// ------------------------------------------------------------
