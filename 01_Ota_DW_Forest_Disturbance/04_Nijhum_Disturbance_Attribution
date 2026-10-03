@@ -283,63 +283,177 @@ var maxDropYear =
 
 
 // ------------------------------------------------------------
-// 7. CANDIDATE + REPEATED DECLINE MASKS
+// 7. CANDIDATE + REPEATED + PERSISTENT DECLINE MASKS
 // ------------------------------------------------------------
 
 var dropThreshold = 0.25;
 
 
+// ------------------------------------------------------------
+// 7A. ANY SUBSTANTIAL DECLINE
+// ------------------------------------------------------------
+
 var candidateDisturbance =
   baselineForestMask.and(
-
-    maxTreeDrop.gt(
-      dropThreshold
-    )
-
+    maxTreeDrop.gt(dropThreshold)
   );
 
 
-var declineYearCount =
-  annualDrops
+// ------------------------------------------------------------
+// 7B. COUNT YEARS WITH SUBSTANTIAL DECLINE
+// ------------------------------------------------------------
 
+var declineFlags =
+  annualDrops
     .map(function(image) {
 
       return image
         .select('tree_drop')
         .gt(dropThreshold)
-        .rename('large_decline');
+        .rename('substantial_decline')
+        .toByte()
+
+        .set(
+          'year',
+          image.get('year')
+        );
 
     })
+    .sort('year');
 
+
+var declineYearCount =
+  declineFlags
     .sum()
-
-    .rename(
-      'decline_year_count'
-    )
-
+    .rename('decline_year_count')
     .updateMask(
       baselineForestMask
     );
 
 
-var persistentCandidate =
-  candidateDisturbance.and(
+// ------------------------------------------------------------
+// 7C. REPEATED DECLINE
+// ------------------------------------------------------------
+//
+// At least TWO decline years,
+// but they do NOT need to be consecutive.
+//
+// Keep this for comparison with the old method.
+//
 
+var repeatedCandidate =
+  candidateDisturbance.and(
     declineYearCount.gte(2)
+  );
+
+
+// ------------------------------------------------------------
+// 7D. TEST CONSECUTIVE-YEAR DECLINE
+// ------------------------------------------------------------
+
+var declineList =
+  declineFlags.toList(
+    declineFlags.size()
+  );
+
+
+var consecutivePairImages =
+  ee.ImageCollection.fromImages(
+
+    ee.List.sequence(
+      0,
+      declineFlags.size().subtract(2)
+    )
+
+    .map(function(i) {
+
+      i = ee.Number(i);
+
+
+      var firstImage =
+        ee.Image(
+          declineList.get(i)
+        );
+
+
+      var secondImage =
+        ee.Image(
+          declineList.get(
+            i.add(1)
+          )
+        );
+
+
+      // 1 only if BOTH consecutive years
+      // exceed the decline threshold.
+
+      var consecutiveDecline =
+        firstImage
+          .and(secondImage)
+          .rename(
+            'consecutive_decline'
+          )
+          .toByte();
+
+
+      return consecutiveDecline
+
+        .set(
+          'start_year',
+          firstImage.get('year')
+        )
+
+        .set(
+          'end_year',
+          secondImage.get('year')
+        );
+
+    })
 
   );
 
 
+// ------------------------------------------------------------
+// 7E. TRUE PERSISTENT CANDIDATE
+// ------------------------------------------------------------
+//
+// At least one pair of consecutive years
+// must both have tree drop > threshold.
+//
+
+var persistentCandidate =
+
+  consecutivePairImages
+    .max()
+    .eq(1)
+
+    .and(
+      baselineForestMask
+    )
+
+    .rename(
+      'persistent_candidate'
+    );
+
+
+// ------------------------------------------------------------
+// 7F. MAP COMPARISON
+// ------------------------------------------------------------
+
 Map.addLayer(
 
-  candidateDisturbance
+  repeatedCandidate
     .selfMask(),
 
-  {palette: ['red']},
+  {
+    palette:
+      ['orange']
+  },
 
-  'Candidate Tree Disturbance',
+  'Repeated Decline (>=2 years, any years)',
 
   false
+
 );
 
 
@@ -348,14 +462,16 @@ Map.addLayer(
   persistentCandidate
     .selfMask(),
 
-  {palette: ['magenta']},
+  {
+    palette:
+      ['magenta']
+  },
 
-  'Persistent Candidate (>=2 years)',
+  'Persistent Decline (>=2 consecutive years)',
 
   true
+
 );
-
-
 // ------------------------------------------------------------
 // 8. RECREATE SELECTED EXPLORATORY CANDIDATE POINT
 // ------------------------------------------------------------
