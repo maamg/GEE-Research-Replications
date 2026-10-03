@@ -3330,18 +3330,22 @@ var firstDeclineYearCollection =
         .gt(dropThreshold);
 
 
-    // Create an image whose pixel value = current year,
-    // but retain only pixels exceeding the decline threshold.
-
+    // Create a constant image containing the year.
+    // Explicitly cast every year's image to Int16
+    // so all images have the same band data type.
     var yearImage =
       ee.Image.constant(year)
-        .rename('first_decline_year')
+
+        .rename(
+          'first_decline_year'
+        )
+
+        .toInt16()
 
         .updateMask(
           substantialDecline
         )
 
-        // Analyse only our persistent candidate pixels.
         .updateMask(
           persistentCandidate
         );
