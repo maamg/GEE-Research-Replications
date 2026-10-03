@@ -4059,8 +4059,426 @@ print(
   processSummary
 );
 
+var processAreaTotal =
+  ee.Number(
+    processSummary.aggregate_sum('area_ha')
+  );
+
+print(
+  'Process-area QC total (ha):',
+  processAreaTotal
+);
+
+// ============================================================
+// PART R
+// FIRST-DECLINE YEAR × MAXIMUM-DROP YEAR TRANSITION MATRIX
+// ============================================================
+//
+// PURPOSE:
+//
+// For every persistent candidate pixel:
+//
+// First substantial decline year
+//            ↓
+// Year of maximum tree-probability decline
+//
+// Then calculate the area (ha) represented by
+// each onset → maximum-decline combination.
+//
+// Example:
+//
+// First decline = 2021
+// Maximum drop  = 2025
+//
+// means:
+//
+// the pixel first crossed the decline threshold in 2021,
+// but its strongest observed decline occurred in 2025.
+//
+// ------------------------------------------------------------
 
 
+// ------------------------------------------------------------
+// 77. CREATE ALL YEAR-PAIR COMBINATIONS
+// ------------------------------------------------------------
+
+var transitionPairList =
+
+  changeYears.map(function(firstYear) {
+
+    firstYear =
+      ee.Number(firstYear)
+        .toInt();
+
+
+    return changeYears.map(function(maxYear) {
+
+      maxYear =
+        ee.Number(maxYear)
+          .toInt();
+
+
+      // Select pixels having this exact
+      // first-decline year AND maximum-drop year.
+
+      var pairMask =
+
+        firstDeclineYear
+          .eq(firstYear)
+
+          .and(
+            maxDropYear.eq(
+              maxYear
+            )
+          )
+
+          .and(
+            persistentCandidate
+          );
+
+
+      // Calculate area in hectares.
+
+      var areaDict =
+
+        pixelAreaHa
+
+          .updateMask(
+            pairMask
+          )
+
+          .reduceRegion({
+
+            reducer:
+              ee.Reducer.sum(),
+
+            geometry:
+              aoi,
+
+            scale:
+              10,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              4
+
+          });
+
+
+      // Return zero if no pixels exist
+      // for a particular year combination.
+
+      var areaHa =
+
+        ee.Number(
+
+          ee.Algorithms.If(
+
+            areaDict.contains(
+              'area_ha'
+            ),
+
+            areaDict.get(
+              'area_ha'
+            ),
+
+            0
+
+          )
+
+        );
+
+
+      var percentage =
+
+        areaHa
+
+          .divide(
+            persistentDeclineAreaHa
+          )
+
+          .multiply(100);
+
+
+      // Lag between onset and maximum decline.
+
+      var lagYears =
+
+        maxYear.subtract(
+          firstYear
+        );
+
+
+      return ee.Feature(
+        null,
+        {
+
+          first_decline_year:
+            firstYear,
+
+          max_drop_year:
+            maxYear,
+
+          lag_years:
+            lagYears,
+
+          area_ha:
+            areaHa,
+
+          pct_of_persistent_area:
+            percentage
+
+        }
+      );
+
+    });
+
+  });
+
+
+// Flatten nested lists:
+//
+// [
+//   [2018→2018, 2018→2019, ...],
+//   [2019→2018, 2019→2019, ...],
+//   ...
+// ]
+//
+// becomes one FeatureCollection.
+
+var transitionMatrix =
+
+  ee.FeatureCollection(
+
+    ee.List(
+      transitionPairList
+    ).flatten()
+
+  );
+
+
+print(
+  'FULL ONSET × MAX-DROP TRANSITION MATRIX:',
+  transitionMatrix
+);
+
+
+// ------------------------------------------------------------
+// 78. REMOVE ZERO-AREA COMBINATIONS
+// ------------------------------------------------------------
+//
+// This makes the table much easier to read.
+//
+
+var nonZeroTransitions =
+
+  transitionMatrix.filter(
+
+    ee.Filter.gt(
+      'area_ha',
+      0
+    )
+
+  );
+
+
+print(
+  'NON-ZERO ONSET → MAXIMUM-DROP TRANSITIONS:',
+  nonZeroTransitions
+);
+
+
+// ------------------------------------------------------------
+// 79. QC:
+// SUM ALL TRANSITION-MATRIX AREAS
+// ------------------------------------------------------------
+
+var transitionAreaTotal =
+
+  ee.Number(
+
+    transitionMatrix
+      .aggregate_sum(
+        'area_ha'
+      )
+
+  );
+
+
+print(
+  'Transition-matrix QC total (ha):',
+  transitionAreaTotal
+);
+
+
+print(
+  'Persistent candidate area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+// ------------------------------------------------------------
+// 80. STACKED TRANSITION CHART
+// ------------------------------------------------------------
+//
+// X-axis:
+//
+// first substantial decline year
+//
+// Each colored series:
+//
+// year of maximum decline
+//
+// Bar height:
+//
+// area (ha)
+//
+// ------------------------------------------------------------
+
+var transitionChart =
+
+  ui.Chart.feature.groups(
+
+    nonZeroTransitions,
+
+    'first_decline_year',
+
+    'area_ha',
+
+    'max_drop_year'
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Tree-Decline Pathways: First Decline → Maximum Decline',
+
+    hAxis: {
+
+      title:
+        'First Substantial Decline Year'
+
+    },
+
+    vAxis: {
+
+      title:
+        'Area (ha)'
+
+    },
+
+    isStacked:
+      true,
+
+    legend: {
+
+      position:
+        'right',
+
+      title:
+        'Maximum Drop Year'
+
+    }
+
+  });
+
+
+print(
+  transitionChart
+);
+
+
+// ------------------------------------------------------------
+// 81. SPECIFICALLY EXAMINE PIXELS
+// WHOSE MAXIMUM DECLINE OCCURRED IN 2025
+// ------------------------------------------------------------
+//
+// Since 2025 dominated the maximum-drop summary,
+// this subset is particularly important.
+//
+
+var transitionsTo2025 =
+
+  nonZeroTransitions
+
+    .filter(
+
+      ee.Filter.eq(
+        'max_drop_year',
+        2025
+      )
+
+    );
+
+
+print(
+  'ONSET YEARS OF PIXELS WITH MAXIMUM DECLINE IN 2025:',
+  transitionsTo2025
+);
+
+
+// ------------------------------------------------------------
+// 82. CHART:
+// WHEN DID 2025-MAXIMUM PIXELS FIRST DECLINE?
+// ------------------------------------------------------------
+
+var onsetTo2025Chart =
+
+  ui.Chart.feature.byFeature(
+
+    transitionsTo2025,
+
+    'first_decline_year',
+
+    [
+      'area_ha'
+    ]
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Onset Years of Pixels Reaching Maximum Decline in 2025',
+
+    hAxis: {
+
+      title:
+        'First Substantial Decline Year'
+
+    },
+
+    vAxis: {
+
+      title:
+        'Area (ha)'
+
+    },
+
+    legend: {
+
+      position:
+        'none'
+
+    }
+
+  });
+
+
+print(
+  onsetTo2025Chart
+);
 
 
 
