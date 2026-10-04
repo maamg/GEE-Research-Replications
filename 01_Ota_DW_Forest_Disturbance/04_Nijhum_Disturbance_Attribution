@@ -3404,34 +3404,425 @@ print(
 
 
 
-// -------------------
 // ============================================================
 // PART O
-// FIRST SUBSTANTIAL TREE-DECLINE YEAR
+// FIRST PERSISTENT TREE-DECLINE YEAR
 // ============================================================
 //
 // Definition:
 //
-// First year after 2017 when:
+// First year of the earliest pair of CONSECUTIVE years
+// in which:
 //
 // 2017 tree probability
 //      -
 // current-year tree probability
 //
-// > 0.25
+// > dropThreshold
+//
+// in BOTH years.
+//
+// Example:
+//
+// 2018 = decline
+// 2019 = no decline
+// 2020 = no decline
+// 2021 = decline
+// 2022 = decline
+//
+// First persistent decline year = 2021
 //
 // IMPORTANT:
 //
-// This is a threshold-based substantial decline,
-// NOT a statistical significance test.
+// This is a threshold-based operational definition.
+// It is NOT a statistical significance test.
+//
 // ============================================================
 
 
 // ------------------------------------------------------------
-// 65. CREATE FIRST-DECLINE-YEAR IMAGE COLLECTION
+// 65. CONVERT EACH CONSECUTIVE PAIR
+// INTO ITS START YEAR
+// ------------------------------------------------------------
+//
+// consecutivePairImages already contains:
+//
+// 2018–2019
+// 2019–2020
+// ...
+// 2024–2025
+//
+// Pixel value = 1 only where BOTH years
+// exceed the decline threshold.
+//
 // ------------------------------------------------------------
 
-var firstDeclineYearCollection =
+var firstPersistentDeclineYearCollection =
+
+  consecutivePairImages.map(function(image) {
+
+    var startYear =
+      ee.Number(
+        image.get('start_year')
+      )
+      .toInt();
+
+
+    // Create an image containing the pair's
+    // START YEAR.
+
+    var startYearImage =
+
+      ee.Image.constant(
+        startYear
+      )
+
+      .rename(
+        'first_persistent_decline_year'
+      )
+
+      .toInt16()
+
+      // Keep only pixels where this pair
+      // actually represents consecutive decline.
+      .updateMask(
+        image.eq(1)
+      )
+
+      // Restrict to final persistent candidates.
+      .updateMask(
+        persistentCandidate
+      );
+
+
+    return startYearImage;
+
+  });
+
+
+// ------------------------------------------------------------
+// 66. FIND EARLIEST PERSISTENT-DECLINE ONSET
+// ------------------------------------------------------------
+//
+// Example:
+//
+// valid pair starts = 2021, 2022, 2024
+//
+// min = 2021
+//
+// ------------------------------------------------------------
+
+var firstPersistentDeclineYear =
+
+  firstPersistentDeclineYearCollection
+    .min()
+
+    .rename(
+      'first_persistent_decline_year'
+    )
+
+    .toInt16();
+
+
+// ------------------------------------------------------------
+// TEMPORARY COMPATIBILITY ALIAS
+// ------------------------------------------------------------
+//
+// Parts P and R currently use the variable name:
+//
+// firstDeclineYear
+//
+// For now, point that variable to the
+// scientifically improved onset image.
+//
+// This means Parts P and R can run unchanged.
+// Later we can rename them cleanly.
+//
+
+var firstDeclineYear =
+  firstPersistentDeclineYear;
+
+
+// ------------------------------------------------------------
+// 67. VISUALIZE FIRST PERSISTENT DECLINE YEAR
+// ------------------------------------------------------------
+
+Map.addLayer(
+
+  firstPersistentDeclineYear,
+
+  {
+
+    min:
+      2018,
+
+    max:
+      2024,
+
+    palette: [
+      'blue',
+      'cyan',
+      'green',
+      'yellow',
+      'orange',
+      'red',
+      'magenta'
+    ]
+
+  },
+
+  'First Persistent Tree-Decline Year',
+
+  true
+);
+
+
+// ------------------------------------------------------------
+// 68. AREA SUMMARY USING ONE GROUPED REDUCTION
+// ------------------------------------------------------------
+//
+// More efficient than running one reduceRegion()
+// separately for every year.
+//
+// Band 0 = area_ha
+// Band 1 = first_persistent_decline_year
+//
+// ------------------------------------------------------------
+
+var firstPersistentAreaImage =
+
+  pixelAreaHa
+    .addBands(
+      firstPersistentDeclineYear
+    );
+
+
+var firstPersistentGroupedResult =
+
+  firstPersistentAreaImage.reduceRegion({
+
+    reducer:
+
+      ee.Reducer
+        .sum()
+
+        .group({
+
+          groupField:
+            1,
+
+          groupName:
+            'year'
+
+        }),
+
+    geometry:
+      aoi,
+
+    scale:
+      10,
+
+    maxPixels:
+      1e9,
+
+    tileScale:
+      4
+
+  });
+
+
+// ------------------------------------------------------------
+// 69. CONVERT GROUPED RESULT TO TABLE
+// ------------------------------------------------------------
+
+var firstPersistentGroups =
+
+  ee.List(
+    firstPersistentGroupedResult.get(
+      'groups'
+    )
+  );
+
+
+var firstPersistentDeclineSummary =
+
+  ee.FeatureCollection(
+
+    firstPersistentGroups.map(
+      function(item) {
+
+        item =
+          ee.Dictionary(item);
+
+
+        var year =
+          ee.Number(
+            item.get('year')
+          )
+          .toInt();
+
+
+        var areaHa =
+          ee.Number(
+            item.get('sum')
+          );
+
+
+        var percentage =
+
+          areaHa
+            .divide(
+              persistentDeclineAreaHa
+            )
+            .multiply(100);
+
+
+        return ee.Feature(
+          null,
+          {
+
+            year:
+              year,
+
+            area_ha:
+              areaHa,
+
+            pct_of_persistent_area:
+              percentage
+
+          }
+        );
+
+      }
+    )
+
+  )
+  .sort('year');
+
+
+print(
+  'FIRST PERSISTENT DECLINE YEAR — AREA SUMMARY:',
+  firstPersistentDeclineSummary
+);
+
+
+// ------------------------------------------------------------
+// 70. QC CHECK
+// ------------------------------------------------------------
+//
+// This total should be essentially identical to:
+//
+// persistentDeclineAreaHa
+//
+// ------------------------------------------------------------
+
+var firstPersistentAreaTotal =
+
+  ee.Number(
+
+    firstPersistentDeclineSummary
+      .aggregate_sum(
+        'area_ha'
+      )
+
+  );
+
+
+print(
+  'First-persistent-onset area total (ha):',
+  firstPersistentAreaTotal
+);
+
+
+print(
+  'Persistent candidate area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+print(
+  'QC difference (ha):',
+
+  firstPersistentAreaTotal
+    .subtract(
+      persistentDeclineAreaHa
+    )
+);
+
+
+// ------------------------------------------------------------
+// 71. BAR CHART
+// ------------------------------------------------------------
+
+var firstPersistentDeclineChart =
+
+  ui.Chart.feature.byFeature(
+
+    firstPersistentDeclineSummary,
+
+    'year',
+
+    ['area_ha']
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Persistent Tree-Decline Area by First Persistent Decline Year',
+
+    hAxis: {
+      title:
+        'First Year of Consecutive Decline'
+    },
+
+    vAxis: {
+      title:
+        'Area (ha)'
+    },
+
+    legend: {
+      position:
+        'none'
+    }
+
+  });
+
+
+print(
+  firstPersistentDeclineChart
+);
+// ============================================================
+// PART O-B
+// MAXIMUM TREE DROP WITHIN THE PERSISTENT DECLINE EPISODE
+// ============================================================
+//
+// PURPOSE:
+//
+// For each persistent candidate pixel:
+//
+// 1. Identify firstPersistentDeclineYear
+// 2. Ignore all years BEFORE that onset
+// 3. Search only from onset year onward
+// 4. Find the year with the maximum tree-probability decline
+//
+// This prevents an earlier isolated decline from being treated
+// as the maximum of the later persistent decline episode.
+//
+// ============================================================
+
+
+// ------------------------------------------------------------
+// A. MASK EACH ANNUAL DROP IMAGE TO YEARS
+//    AT OR AFTER PERSISTENT ONSET
+// ------------------------------------------------------------
+
+var persistentEpisodeDrops =
+
   annualDrops.map(function(image) {
 
     var year =
@@ -3440,60 +3831,109 @@ var firstDeclineYearCollection =
       );
 
 
-    var substantialDecline =
-      image
-        .select('tree_drop')
-        .gt(dropThreshold);
+    // Convert the image year into a constant raster
+    // so it can be compared pixel-by-pixel with
+    // firstPersistentDeclineYear.
 
-
-    // Create a constant image containing the year.
-    // Explicitly cast every year's image to Int16
-    // so all images have the same band data type.
     var yearImage =
       ee.Image.constant(year)
-
-        .rename(
-          'first_decline_year'
-        )
-
-        .toInt16()
-
-        .updateMask(
-          substantialDecline
-        )
-
-        .updateMask(
-          persistentCandidate
-        );
+        .toInt16();
 
 
-    return yearImage;
+    // Keep this annual image only where:
+    //
+    // current year >= first persistent decline year
+
+    var afterOnsetMask =
+      yearImage.gte(
+        firstPersistentDeclineYear
+      );
+
+
+    return image
+
+      .updateMask(
+        afterOnsetMask
+      )
+
+      .updateMask(
+        persistentCandidate
+      )
+
+      .copyProperties(
+        image,
+        [
+          'year',
+          'system:time_start'
+        ]
+      );
 
   });
 
 
 // ------------------------------------------------------------
-// 66. FIND EARLIEST THRESHOLD-CROSSING YEAR
-// ------------------------------------------------------------
-//
-// Since years are numeric:
-//
-// min(2018, 2019, 2020 ...)
-// = earliest year that remained unmasked.
-//
+// B. FIND MAXIMUM TREE DROP WITHIN PERSISTENT EPISODE
 // ------------------------------------------------------------
 
-var firstDeclineYear =
-  firstDeclineYearCollection
-    .min()
-    .rename(
-      'first_decline_year'
+var persistentEpisodeMaxComposite =
+
+  persistentEpisodeDrops
+    .qualityMosaic(
+      'tree_drop'
     );
 
 
+// ------------------------------------------------------------
+// C. MAXIMUM DROP MAGNITUDE
+// ------------------------------------------------------------
+
+var persistentEpisodeMaxTreeDrop =
+
+  persistentEpisodeMaxComposite
+
+    .select(
+      'tree_drop'
+    )
+
+    .rename(
+      'persistent_episode_max_tree_drop'
+    )
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+// ------------------------------------------------------------
+// D. YEAR OF MAXIMUM DROP WITHIN PERSISTENT EPISODE
+// ------------------------------------------------------------
+
+var persistentEpisodeMaxDropYear =
+
+  persistentEpisodeMaxComposite
+
+    .select(
+      'drop_year'
+    )
+
+    .rename(
+      'persistent_episode_max_drop_year'
+    )
+
+    .toInt16()
+
+    .updateMask(
+      persistentCandidate
+    );
+
+
+// ------------------------------------------------------------
+// E. VISUALIZE
+// ------------------------------------------------------------
+
 Map.addLayer(
 
-  firstDeclineYear,
+  persistentEpisodeMaxDropYear,
 
   {
 
@@ -3516,185 +3956,88 @@ Map.addLayer(
 
   },
 
-  'First Substantial Tree-Decline Year',
+  'Maximum Drop Year — Persistent Episode',
 
-  true
-
+  false
 );
 
 
 // ------------------------------------------------------------
-// 67. AREA SUMMARY BY FIRST DECLINE YEAR
+// F. DIAGNOSTIC:
+// HOW MUCH AREA HAD ITS OLD MAXIMUM BEFORE PERSISTENT ONSET?
 // ------------------------------------------------------------
+//
+// These are the pixels responsible for negative lag
+// under the previous method.
+//
 
-var firstDeclineSummary =
-  ee.FeatureCollection(
+var oldMaximumBeforePersistentOnset =
 
-    changeYears.map(function(year) {
+  maxDropYear
+    .lt(
+      firstPersistentDeclineYear
+    )
 
-      year =
-        ee.Number(year);
-
-
-      var yearMask =
-        firstDeclineYear
-          .eq(year);
-
-
-      var areaDict =
-        pixelAreaHa
-
-          .updateMask(
-            yearMask
-          )
-
-          .reduceRegion({
-
-            reducer:
-              ee.Reducer.sum(),
-
-            geometry:
-              aoi,
-
-            scale:
-              10,
-
-            maxPixels:
-              1e9,
-
-            tileScale:
-              4
-
-          });
+    .and(
+      persistentCandidate
+    );
 
 
-      var areaHa =
-        ee.Number(
+var oldMaximumBeforeOnsetAreaHa =
 
-          ee.Algorithms.If(
-
-            areaDict.contains(
-              'area_ha'
-            ),
-
-            areaDict.get(
-              'area_ha'
-            ),
-
-            0
-
-          )
-
-        );
-
-
-      var percentPersistent =
-        areaHa
-
-          .divide(
-            persistentDeclineAreaHa
-          )
-
-          .multiply(100);
-
-
-      return ee.Feature(
-        null,
-        {
-
-          year:
-            year,
-
-          area_ha:
-            areaHa,
-
-          pct_of_persistent_area:
-            percentPersistent
-
-        }
-      );
-
-    })
-
+  calculateAreaHa(
+    oldMaximumBeforePersistentOnset
   );
 
 
 print(
-  'FIRST SUBSTANTIAL DECLINE YEAR — AREA SUMMARY:',
-  firstDeclineSummary
+  'Area where OLD maximum occurred before persistent onset (ha):',
+  oldMaximumBeforeOnsetAreaHa
 );
 
 
 // ------------------------------------------------------------
-// 68. QC: TOTAL AREA
+// G. CHECK NEW LAG RANGE
 // ------------------------------------------------------------
 
-var firstDeclineAreaSum =
-  ee.Number(
+var persistentEpisodeLagCheck =
 
-    firstDeclineSummary
-      .aggregate_sum(
-        'area_ha'
-      )
+  persistentEpisodeMaxDropYear
 
-  );
+    .subtract(
+      firstPersistentDeclineYear
+    )
 
-
-print(
-  'Sum of first-decline areas (ha):',
-  firstDeclineAreaSum
-);
+    .rename(
+      'persistent_episode_lag'
+    );
 
 
-print(
-  'Persistent candidate area (ha):',
-  persistentDeclineAreaHa
-);
+var lagCheckStats =
 
+  persistentEpisodeLagCheck.reduceRegion({
 
-// ------------------------------------------------------------
-// 69. BAR CHART
-// ------------------------------------------------------------
+    reducer:
+      ee.Reducer.minMax(),
 
-var firstDeclineChart =
-  ui.Chart.feature.byFeature(
+    geometry:
+      aoi,
 
-    firstDeclineSummary,
+    scale:
+      10,
 
-    'year',
+    maxPixels:
+      1e9,
 
-    [
-      'area_ha'
-    ]
-
-  )
-
-  .setChartType(
-    'ColumnChart'
-  )
-
-  .setOptions({
-
-    title:
-      'Persistent Tree-Decline Area by First Substantial Decline Year',
-
-    hAxis: {
-      title: 'Year'
-    },
-
-    vAxis: {
-      title: 'Area (ha)'
-    },
-
-    legend: {
-      position: 'none'
-    }
+    tileScale:
+      4
 
   });
 
 
 print(
-  firstDeclineChart
+  'Persistent-episode lag min/max:',
+  lagCheckStats
 );
 
 // ============================================================
@@ -3722,22 +4065,15 @@ print(
 // ------------------------------------------------------------
 
 var declineLagYears =
-  maxDropYear
-
+  persistentEpisodeMaxDropYear
     .subtract(
-      firstDeclineYear
+      firstPersistentDeclineYear
     )
-
-    .rename(
-      'lag_years'
-    )
-
+    .rename('lag_years')
     .toInt16()
-
     .updateMask(
       persistentCandidate
     );
-
 
 Map.addLayer(
 
@@ -4486,9 +4822,8 @@ var transitionCode =
     .multiply(10000)
 
     .add(
-      maxDropYear.toInt32()
+      persistentEpisodeMaxDropYear.toInt32()
     )
-
     .rename(
       'transition_code'
     )
@@ -4813,6 +5148,1548 @@ print(
   onsetTo2025Chart
 );
 
+
+// ============================================================
+// PART S
+// DROP-THRESHOLD SENSITIVITY ANALYSIS
+// ============================================================
+//
+// PURPOSE:
+//
+// Test whether the main findings remain broadly stable when
+// the substantial tree-drop threshold changes:
+//
+// 0.20 = less strict
+// 0.25 = main/current threshold
+// 0.30 = more strict
+//
+// IMPORTANT:
+//
+// Baseline tree threshold remains fixed at 0.60.
+//
+// Persistence definition remains fixed:
+//
+// tree drop > threshold
+// in at least TWO CONSECUTIVE years.
+//
+// Maximum decline is searched only within the
+// persistent decline episode.
+//
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 85. FUNCTION TO BUILD ONE THRESHOLD CASE
+// ------------------------------------------------------------
+
+var buildSensitivityCase =
+  function(threshold, tag) {
+
+
+    // --------------------------------------------------------
+    // A. ANNUAL THRESHOLD-CROSSING FLAGS
+    // --------------------------------------------------------
+
+    var flags =
+      annualDrops
+
+        .map(function(image) {
+
+          return image
+            .select('tree_drop')
+
+            .gt(threshold)
+
+            .rename(
+              'substantial_decline'
+            )
+
+            .toByte()
+
+            .set(
+              'year',
+              image.get('year')
+            );
+
+        })
+
+        .sort('year');
+
+
+    var flagList =
+      flags.toList(
+        flags.size()
+      );
+
+
+    // --------------------------------------------------------
+    // B. CONSECUTIVE-YEAR PAIRS
+    // --------------------------------------------------------
+
+    var pairCollection =
+      ee.ImageCollection.fromImages(
+
+        ee.List.sequence(
+          0,
+          flags.size().subtract(2)
+        )
+
+        .map(function(i) {
+
+          i =
+            ee.Number(i);
+
+
+          var firstImage =
+            ee.Image(
+              flagList.get(i)
+            );
+
+
+          var secondImage =
+            ee.Image(
+              flagList.get(
+                i.add(1)
+              )
+            );
+
+
+          var pair =
+            firstImage
+
+              .and(
+                secondImage
+              )
+
+              .rename(
+                'consecutive_decline'
+              )
+
+              .toByte();
+
+
+          return pair
+
+            .set(
+              'start_year',
+              firstImage.get('year')
+            )
+
+            .set(
+              'end_year',
+              secondImage.get('year')
+            );
+
+        })
+
+      );
+
+
+    // --------------------------------------------------------
+    // C. PERSISTENT CANDIDATE MASK
+    // --------------------------------------------------------
+
+    var persistent =
+      pairCollection
+
+        .max()
+
+        .eq(1)
+
+        .and(
+          baselineForestMask
+        )
+
+        .rename(
+          'persistent_' + tag
+        );
+
+
+    // --------------------------------------------------------
+    // D. FIRST PERSISTENT DECLINE YEAR
+    // --------------------------------------------------------
+
+    var onsetCollection =
+      pairCollection.map(
+        function(image) {
+
+          var startYear =
+            ee.Number(
+              image.get(
+                'start_year'
+              )
+            )
+            .toInt();
+
+
+          return ee.Image.constant(
+              startYear
+            )
+
+            .rename(
+              'persistent_onset'
+            )
+
+            .toInt16()
+
+            .updateMask(
+              image.eq(1)
+            )
+
+            .updateMask(
+              persistent
+            );
+
+        });
+
+
+    var onset =
+      onsetCollection
+
+        .min()
+
+        .rename(
+          'persistent_onset'
+        )
+
+        .toInt16();
+
+
+    // --------------------------------------------------------
+    // E. SEARCH MAXIMUM DROP ONLY FROM ONSET ONWARD
+    // --------------------------------------------------------
+
+    var episodeDrops =
+      annualDrops.map(
+        function(image) {
+
+          var year =
+            ee.Number(
+              image.get('year')
+            );
+
+
+          var yearImage =
+            ee.Image.constant(
+              year
+            )
+            .toInt16();
+
+
+          var afterOnset =
+            yearImage.gte(
+              onset
+            );
+
+
+          return image
+
+            .updateMask(
+              afterOnset
+            )
+
+            .updateMask(
+              persistent
+            );
+
+        });
+
+
+    var episodeMaxComposite =
+      episodeDrops
+        .qualityMosaic(
+          'tree_drop'
+        );
+
+
+    var episodeMaxYear =
+      episodeMaxComposite
+
+        .select(
+          'drop_year'
+        )
+
+        .rename(
+          'episode_max_year'
+        )
+
+        .toInt16()
+
+        .updateMask(
+          persistent
+        );
+
+
+    // --------------------------------------------------------
+    // F. ONSET → MAXIMUM LAG
+    // --------------------------------------------------------
+
+    var lag =
+      episodeMaxYear
+
+        .subtract(
+          onset
+        )
+
+        .rename(
+          'lag_years'
+        )
+
+        .toInt16()
+
+        .updateMask(
+          persistent
+        );
+
+
+    // --------------------------------------------------------
+    // G. ANY-DROP CANDIDATE
+    // --------------------------------------------------------
+
+    var candidate =
+      baselineForestMask
+
+        .and(
+          maxTreeDrop.gt(
+            threshold
+          )
+        );
+
+
+    // --------------------------------------------------------
+    // H. TEMPORAL PATTERN MASKS
+    // --------------------------------------------------------
+    //
+    // lag >= 2 corresponds to:
+    //
+    // Progressive +
+    // Prolonged progressive
+    //
+
+    var lag2Plus =
+      persistent
+
+        .and(
+          lag.gte(2)
+        );
+
+
+    var maxIn2025 =
+      persistent
+
+        .and(
+          episodeMaxYear.eq(
+            2025
+          )
+        );
+
+
+    // --------------------------------------------------------
+    // I. AREA BANDS
+    // --------------------------------------------------------
+    //
+    // No reduceRegion() is performed here.
+    //
+    // We create area bands first, then reduce ALL thresholds
+    // together with ONE aggregation later.
+    //
+
+    var areaBands =
+      ee.Image.cat([
+
+        pixelAreaHa
+          .updateMask(
+            candidate
+          )
+          .rename(
+            tag + '_candidate_ha'
+          ),
+
+
+        pixelAreaHa
+          .updateMask(
+            persistent
+          )
+          .rename(
+            tag + '_persistent_ha'
+          ),
+
+
+        pixelAreaHa
+          .updateMask(
+            lag2Plus
+          )
+          .rename(
+            tag + '_lag2plus_ha'
+          ),
+
+
+        pixelAreaHa
+          .updateMask(
+            maxIn2025
+          )
+          .rename(
+            tag + '_max2025_ha'
+          )
+
+      ]);
+
+
+    // Return a normal JavaScript object
+    // containing Earth Engine objects.
+
+    return {
+
+      areaBands:
+        areaBands,
+
+      persistent:
+        persistent,
+
+      onset:
+        onset,
+
+      episodeMaxYear:
+        episodeMaxYear,
+
+      lag:
+        lag
+
+    };
+
+  };
+
+
+// ============================================================
+// 86. BUILD THREE THRESHOLD CASES
+// ============================================================
+
+var sensitivity20 =
+  buildSensitivityCase(
+    0.20,
+    'T20'
+  );
+
+
+var sensitivity25 =
+  buildSensitivityCase(
+    0.25,
+    'T25'
+  );
+
+
+var sensitivity30 =
+  buildSensitivityCase(
+    0.30,
+    'T30'
+  );
+
+
+// ============================================================
+// 87. COMBINE ALL AREA BANDS
+// ============================================================
+
+var sensitivityAreaImage =
+  ee.Image.cat([
+
+    sensitivity20.areaBands,
+
+    sensitivity25.areaBands,
+
+    sensitivity30.areaBands
+
+  ]);
+
+
+// ============================================================
+// 88. ONE AREA REDUCTION FOR ALL THREE THRESHOLDS
+// ============================================================
+
+var sensitivityAreaStats =
+  sensitivityAreaImage.reduceRegion({
+
+    reducer:
+      ee.Reducer.sum(),
+
+    geometry:
+      aoi,
+
+    scale:
+      10,
+
+    maxPixels:
+      1e9,
+
+    tileScale:
+      4
+
+  });
+
+
+print(
+  'RAW THRESHOLD-SENSITIVITY AREA STATISTICS:',
+  sensitivityAreaStats
+);
+
+
+// ============================================================
+// 89. SAFE AREA-EXTRACTION HELPER
+// ============================================================
+
+var getSensitivityArea =
+  function(key) {
+
+    return ee.Number(
+
+      ee.Algorithms.If(
+
+        sensitivityAreaStats
+          .contains(key),
+
+        sensitivityAreaStats
+          .get(key),
+
+        0
+
+      )
+
+    );
+
+  };
+
+
+// ============================================================
+// 90. FUNCTION TO CREATE ONE SUMMARY ROW
+// ============================================================
+
+var makeSensitivityRow =
+  function(threshold, tag) {
+
+
+    var candidateArea =
+      getSensitivityArea(
+        tag + '_candidate_ha'
+      );
+
+
+    var persistentArea =
+      getSensitivityArea(
+        tag + '_persistent_ha'
+      );
+
+
+    var lag2PlusArea =
+      getSensitivityArea(
+        tag + '_lag2plus_ha'
+      );
+
+
+    var max2025Area =
+      getSensitivityArea(
+        tag + '_max2025_ha'
+      );
+
+
+    var persistentPctBaseline =
+      persistentArea
+
+        .divide(
+          baselineHighTreeAreaHa
+        )
+
+        .multiply(100);
+
+
+    var persistentPctCandidate =
+      persistentArea
+
+        .divide(
+          candidateArea
+        )
+
+        .multiply(100);
+
+
+    var lag2PlusPct =
+      lag2PlusArea
+
+        .divide(
+          persistentArea
+        )
+
+        .multiply(100);
+
+
+    var max2025Pct =
+      max2025Area
+
+        .divide(
+          persistentArea
+        )
+
+        .multiply(100);
+
+
+    return ee.Feature(
+      null,
+      {
+
+        drop_threshold:
+          threshold,
+
+        candidate_area_ha:
+          candidateArea,
+
+        persistent_area_ha:
+          persistentArea,
+
+        persistent_pct_of_baseline:
+          persistentPctBaseline,
+
+        persistent_pct_of_candidate:
+          persistentPctCandidate,
+
+        lag_2plus_area_ha:
+          lag2PlusArea,
+
+        lag_2plus_pct_of_persistent:
+          lag2PlusPct,
+
+        max_2025_area_ha:
+          max2025Area,
+
+        max_2025_pct_of_persistent:
+          max2025Pct
+
+      }
+    );
+
+  };
+
+
+// ============================================================
+// 91. FINAL SENSITIVITY TABLE
+// ============================================================
+
+var thresholdSensitivitySummary =
+  ee.FeatureCollection([
+
+    makeSensitivityRow(
+      0.20,
+      'T20'
+    ),
+
+    makeSensitivityRow(
+      0.25,
+      'T25'
+    ),
+
+    makeSensitivityRow(
+      0.30,
+      'T30'
+    )
+
+  ]);
+
+
+print(
+  'DROP-THRESHOLD SENSITIVITY SUMMARY:',
+  thresholdSensitivitySummary
+);
+
+
+// ============================================================
+// 92. IMPORTANT QC:
+// DOES THE 0.25 CASE REPRODUCE THE MAIN ANALYSIS?
+// ============================================================
+
+var sensitivityT25PersistentArea =
+  getSensitivityArea(
+    'T25_persistent_ha'
+  );
+
+
+print(
+  'QC — T25 persistent area (ha):',
+  sensitivityT25PersistentArea
+);
+
+
+print(
+  'QC — Main persistent area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+print(
+  'QC — T25 minus main analysis (ha):',
+
+  sensitivityT25PersistentArea
+    .subtract(
+      persistentDeclineAreaHa
+    )
+);
+
+
+// ============================================================
+// 93. PERSISTENT AREA CHART
+// ============================================================
+
+var sensitivityAreaChart =
+  ui.Chart.feature.byFeature(
+
+    thresholdSensitivitySummary,
+
+    'drop_threshold',
+
+    [
+      'persistent_area_ha'
+    ]
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Sensitivity of Persistent Tree-Decline Area to Drop Threshold',
+
+    hAxis: {
+      title:
+        'Tree-Probability Drop Threshold'
+    },
+
+    vAxis: {
+      title:
+        'Persistent Candidate Area (ha)'
+    },
+
+    legend: {
+      position:
+        'none'
+    }
+
+  });
+
+
+print(
+  sensitivityAreaChart
+);
+
+
+// ============================================================
+// PART T
+// BASELINE TREE-THRESHOLD SENSITIVITY ANALYSIS
+// ============================================================
+//
+// PURPOSE:
+//
+// Test whether the main temporal findings remain stable when
+// the 2017 high-tree baseline threshold changes:
+//
+// 0.55 = less strict
+// 0.60 = main/current threshold
+// 0.65 = more strict
+//
+// FIXED:
+//
+// tree-drop threshold = 0.25
+//
+// persistence = tree drop > 0.25
+//               in at least TWO CONSECUTIVE years
+//
+// maximum decline = searched only from persistent onset onward
+//
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 94. FIX DROP THRESHOLD
+// ------------------------------------------------------------
+
+var sensitivityDropThreshold =
+  0.25;
+
+
+// ------------------------------------------------------------
+// 95. IMPORTANT:
+// USE RAW MAXIMUM DROP WITHOUT THE ORIGINAL >0.60 MASK
+// ------------------------------------------------------------
+//
+// Do NOT use maxTreeDrop here,
+// because maxTreeDrop was already masked using
+// baselineForestMask (>0.60).
+//
+// ------------------------------------------------------------
+
+var rawMaxTreeDrop =
+  maxDropComposite
+    .select('tree_drop')
+    .rename('raw_max_tree_drop');
+
+
+// ------------------------------------------------------------
+// 96. CREATE DECLINE FLAGS ONCE
+// ------------------------------------------------------------
+//
+// Baseline TREE threshold changes,
+// but the drop threshold remains 0.25.
+//
+// ------------------------------------------------------------
+
+var baselineSensitivityFlags =
+
+  annualDrops
+    .map(function(image) {
+
+      return image
+
+        .select('tree_drop')
+
+        .gt(
+          sensitivityDropThreshold
+        )
+
+        .rename(
+          'substantial_decline'
+        )
+
+        .toByte()
+
+        .set(
+          'year',
+          image.get('year')
+        );
+
+    })
+
+    .sort('year');
+
+
+var baselineSensitivityFlagList =
+
+  baselineSensitivityFlags
+    .toList(
+      baselineSensitivityFlags.size()
+    );
+
+
+// ------------------------------------------------------------
+// 97. CREATE CONSECUTIVE DECLINE PAIRS ONCE
+// ------------------------------------------------------------
+
+var baselineSensitivityPairs =
+
+  ee.ImageCollection.fromImages(
+
+    ee.List.sequence(
+      0,
+      baselineSensitivityFlags
+        .size()
+        .subtract(2)
+    )
+
+    .map(function(i) {
+
+      i =
+        ee.Number(i);
+
+
+      var firstImage =
+        ee.Image(
+          baselineSensitivityFlagList
+            .get(i)
+        );
+
+
+      var secondImage =
+        ee.Image(
+          baselineSensitivityFlagList
+            .get(
+              i.add(1)
+            )
+        );
+
+
+      var pair =
+        firstImage
+
+          .and(
+            secondImage
+          )
+
+          .rename(
+            'consecutive_decline'
+          )
+
+          .toByte();
+
+
+      return pair
+
+        .set(
+          'start_year',
+          firstImage.get('year')
+        )
+
+        .set(
+          'end_year',
+          secondImage.get('year')
+        );
+
+    })
+
+  );
+
+
+// ============================================================
+// 98. FUNCTION TO BUILD ONE BASELINE-THRESHOLD CASE
+// ============================================================
+
+var buildBaselineSensitivityCase =
+  function(treeThreshold, tag) {
+
+
+    // --------------------------------------------------------
+    // A. 2017 HIGH-TREE BASELINE
+    // --------------------------------------------------------
+
+    var baselineMask =
+
+      baselineTree
+
+        .gt(
+          treeThreshold
+        )
+
+        .rename(
+          'baseline_' + tag
+        );
+
+
+    // --------------------------------------------------------
+    // B. ANY SUBSTANTIAL DECLINE
+    // --------------------------------------------------------
+
+    var candidate =
+
+      baselineMask
+
+        .and(
+
+          rawMaxTreeDrop.gt(
+            sensitivityDropThreshold
+          )
+
+        );
+
+
+    // --------------------------------------------------------
+    // C. PERSISTENT DECLINE
+    // --------------------------------------------------------
+
+    var persistent =
+
+      baselineSensitivityPairs
+
+        .max()
+
+        .eq(1)
+
+        .and(
+          baselineMask
+        )
+
+        .rename(
+          'persistent_' + tag
+        );
+
+
+    // --------------------------------------------------------
+    // D. FIRST PERSISTENT DECLINE YEAR
+    // --------------------------------------------------------
+
+    var onsetCollection =
+
+      baselineSensitivityPairs
+        .map(function(image) {
+
+          var startYear =
+
+            ee.Number(
+              image.get(
+                'start_year'
+              )
+            )
+
+            .toInt();
+
+
+          return ee.Image.constant(
+              startYear
+            )
+
+            .rename(
+              'persistent_onset'
+            )
+
+            .toInt16()
+
+            .updateMask(
+              image.eq(1)
+            )
+
+            .updateMask(
+              persistent
+            );
+
+        });
+
+
+    var onset =
+
+      onsetCollection
+
+        .min()
+
+        .rename(
+          'persistent_onset'
+        )
+
+        .toInt16();
+
+
+    // --------------------------------------------------------
+    // E. MAXIMUM DROP WITHIN PERSISTENT EPISODE
+    // --------------------------------------------------------
+
+    var episodeDrops =
+
+      annualDrops.map(function(image) {
+
+        var year =
+
+          ee.Number(
+            image.get('year')
+          );
+
+
+        var yearImage =
+
+          ee.Image.constant(
+            year
+          )
+
+          .toInt16();
+
+
+        var afterOnset =
+
+          yearImage.gte(
+            onset
+          );
+
+
+        return image
+
+          .updateMask(
+            afterOnset
+          )
+
+          .updateMask(
+            persistent
+          );
+
+      });
+
+
+    var episodeMaxComposite =
+
+      episodeDrops
+
+        .qualityMosaic(
+          'tree_drop'
+        );
+
+
+    var episodeMaxYear =
+
+      episodeMaxComposite
+
+        .select(
+          'drop_year'
+        )
+
+        .rename(
+          'episode_max_year'
+        )
+
+        .toInt16()
+
+        .updateMask(
+          persistent
+        );
+
+
+    // --------------------------------------------------------
+    // F. ONSET → MAXIMUM LAG
+    // --------------------------------------------------------
+
+    var lag =
+
+      episodeMaxYear
+
+        .subtract(
+          onset
+        )
+
+        .rename(
+          'lag_years'
+        )
+
+        .toInt16()
+
+        .updateMask(
+          persistent
+        );
+
+
+    // --------------------------------------------------------
+    // G. TEMPORAL INDICATORS
+    // --------------------------------------------------------
+
+    var lag2Plus =
+
+      persistent
+
+        .and(
+          lag.gte(2)
+        );
+
+
+    var maxIn2025 =
+
+      persistent
+
+        .and(
+          episodeMaxYear.eq(2025)
+        );
+
+
+    // --------------------------------------------------------
+    // H. CREATE AREA BANDS
+    // --------------------------------------------------------
+
+    var areaBands =
+
+      ee.Image.cat([
+
+
+        pixelAreaHa
+
+          .updateMask(
+            baselineMask
+          )
+
+          .rename(
+            tag + '_baseline_ha'
+          ),
+
+
+        pixelAreaHa
+
+          .updateMask(
+            candidate
+          )
+
+          .rename(
+            tag + '_candidate_ha'
+          ),
+
+
+        pixelAreaHa
+
+          .updateMask(
+            persistent
+          )
+
+          .rename(
+            tag + '_persistent_ha'
+          ),
+
+
+        pixelAreaHa
+
+          .updateMask(
+            lag2Plus
+          )
+
+          .rename(
+            tag + '_lag2plus_ha'
+          ),
+
+
+        pixelAreaHa
+
+          .updateMask(
+            maxIn2025
+          )
+
+          .rename(
+            tag + '_max2025_ha'
+          )
+
+      ]);
+
+
+    return {
+
+      areaBands:
+        areaBands,
+
+      baselineMask:
+        baselineMask,
+
+      persistent:
+        persistent,
+
+      onset:
+        onset,
+
+      episodeMaxYear:
+        episodeMaxYear,
+
+      lag:
+        lag
+
+    };
+
+  };
+
+
+// ============================================================
+// 99. BUILD THREE BASELINE CASES
+// ============================================================
+
+var baseline55 =
+
+  buildBaselineSensitivityCase(
+    0.55,
+    'B55'
+  );
+
+
+var baseline60 =
+
+  buildBaselineSensitivityCase(
+    0.60,
+    'B60'
+  );
+
+
+var baseline65 =
+
+  buildBaselineSensitivityCase(
+    0.65,
+    'B65'
+  );
+
+
+// ============================================================
+// 100. COMBINE ALL AREA BANDS
+// ============================================================
+
+var baselineSensitivityAreaImage =
+
+  ee.Image.cat([
+
+    baseline55.areaBands,
+
+    baseline60.areaBands,
+
+    baseline65.areaBands
+
+  ]);
+
+
+// ============================================================
+// 101. ONE REDUCTION FOR ALL THREE CASES
+// ============================================================
+
+var baselineSensitivityStats =
+
+  baselineSensitivityAreaImage
+    .reduceRegion({
+
+      reducer:
+        ee.Reducer.sum(),
+
+      geometry:
+        aoi,
+
+      scale:
+        10,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        4
+
+    });
+
+
+print(
+  'RAW BASELINE-THRESHOLD SENSITIVITY STATISTICS:',
+  baselineSensitivityStats
+);
+
+
+// ============================================================
+// 102. SAFE AREA HELPER
+// ============================================================
+
+var getBaselineSensitivityArea =
+  function(key) {
+
+    return ee.Number(
+
+      ee.Algorithms.If(
+
+        baselineSensitivityStats
+          .contains(key),
+
+        baselineSensitivityStats
+          .get(key),
+
+        0
+
+      )
+
+    );
+
+  };
+
+
+// ============================================================
+// 103. CREATE ONE SUMMARY ROW
+// ============================================================
+
+var makeBaselineSensitivityRow =
+  function(treeThreshold, tag) {
+
+
+    var baselineArea =
+
+      getBaselineSensitivityArea(
+        tag + '_baseline_ha'
+      );
+
+
+    var candidateArea =
+
+      getBaselineSensitivityArea(
+        tag + '_candidate_ha'
+      );
+
+
+    var persistentArea =
+
+      getBaselineSensitivityArea(
+        tag + '_persistent_ha'
+      );
+
+
+    var lag2PlusArea =
+
+      getBaselineSensitivityArea(
+        tag + '_lag2plus_ha'
+      );
+
+
+    var max2025Area =
+
+      getBaselineSensitivityArea(
+        tag + '_max2025_ha'
+      );
+
+
+    return ee.Feature(
+      null,
+      {
+
+        baseline_tree_threshold:
+          treeThreshold,
+
+        baseline_area_ha:
+          baselineArea,
+
+        candidate_area_ha:
+          candidateArea,
+
+        persistent_area_ha:
+          persistentArea,
+
+        persistent_pct_of_baseline:
+
+          persistentArea
+            .divide(
+              baselineArea
+            )
+            .multiply(100),
+
+        persistent_pct_of_candidate:
+
+          persistentArea
+            .divide(
+              candidateArea
+            )
+            .multiply(100),
+
+        lag_2plus_area_ha:
+          lag2PlusArea,
+
+        lag_2plus_pct_of_persistent:
+
+          lag2PlusArea
+            .divide(
+              persistentArea
+            )
+            .multiply(100),
+
+        max_2025_area_ha:
+          max2025Area,
+
+        max_2025_pct_of_persistent:
+
+          max2025Area
+            .divide(
+              persistentArea
+            )
+            .multiply(100)
+
+      }
+    );
+
+  };
+
+
+// ============================================================
+// 104. FINAL BASELINE-SENSITIVITY TABLE
+// ============================================================
+
+var baselineThresholdSensitivitySummary =
+
+  ee.FeatureCollection([
+
+    makeBaselineSensitivityRow(
+      0.55,
+      'B55'
+    ),
+
+    makeBaselineSensitivityRow(
+      0.60,
+      'B60'
+    ),
+
+    makeBaselineSensitivityRow(
+      0.65,
+      'B65'
+    )
+
+  ]);
+
+
+print(
+  'BASELINE TREE-THRESHOLD SENSITIVITY SUMMARY:',
+  baselineThresholdSensitivitySummary
+);
+
+
+// ============================================================
+// 105. MAIN-ANALYSIS QC
+// ============================================================
+
+var baseline60PersistentArea =
+
+  getBaselineSensitivityArea(
+    'B60_persistent_ha'
+  );
+
+
+print(
+  'QC — B60 persistent area (ha):',
+  baseline60PersistentArea
+);
+
+
+print(
+  'QC — Main persistent area (ha):',
+  persistentDeclineAreaHa
+);
+
+
+print(
+  'QC — B60 minus main analysis (ha):',
+
+  baseline60PersistentArea
+    .subtract(
+      persistentDeclineAreaHa
+    )
+);
+
+
+// ============================================================
+// 106. PERSISTENT-AREA CHART
+// ============================================================
+
+var baselineSensitivityChart =
+
+  ui.Chart.feature.byFeature(
+
+    baselineThresholdSensitivitySummary,
+
+    'baseline_tree_threshold',
+
+    [
+      'persistent_area_ha'
+    ]
+
+  )
+
+  .setChartType(
+    'ColumnChart'
+  )
+
+  .setOptions({
+
+    title:
+      'Sensitivity of Persistent Tree-Decline Area to 2017 Baseline Threshold',
+
+    hAxis: {
+      title:
+        '2017 Tree-Probability Threshold'
+    },
+
+    vAxis: {
+      title:
+        'Persistent Candidate Area (ha)'
+    },
+
+    legend: {
+      position:
+        'none'
+    }
+
+  });
+
+
+print(
+  baselineSensitivityChart
+);
 
 
 
