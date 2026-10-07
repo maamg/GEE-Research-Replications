@@ -17,7 +17,15 @@
 // ============================================================
 
 // 1.1 AOI Definition (Replace with your actual AOI geometry asset/variable)
-var aoi = ee.Geometry.Polygon(/* Add AOI Coordinates Here */);
+var wdpa = ee.FeatureCollection(
+  'WCMC/WDPA/current/polygons'
+);
+
+var nijhum = wdpa.filter(
+  ee.Filter.eq('SITE_ID', 317318)
+);
+
+var aoi = nijhum;
 
 // 1.2 Cloud & Shadow Masking Helper for Sentinel-2 SR
 var maskS2sr = function(image) {
