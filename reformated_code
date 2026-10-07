@@ -1,0 +1,395 @@
+// ============================================================
+// GOOGLE EARTH ENGINE (GEE): FOREST CANOPY DECLINE WORKFLOW
+// Complete Unified & Refactored Script (Modules 1 - 6)
+// ============================================================
+// 
+// OVERVIEW:
+// Multi-temporal forest canopy decline and temporal dynamics
+// assessment using Sentinel-2 imagery (2017–2025).
+// Includes 2-year persistent loss tracking, onset-to-peak lag
+// analysis, and 2-way sensitivity analysis for validation.
+//
+// ============================================================
+
+
+// ============================================================
+// MODULE 1: INGESTION, CLOUD MASKING & PREPROCESSING
+// ============================================================
+
+// 1.1 AOI Definition (Replace with your actual AOI geometry asset/variable)
+var aoi = ee.Geometry.Polygon(/* Add AOI Coordinates Here */);
+
+// 1.2 Cloud & Shadow Masking Helper for Sentinel-2 SR
+var maskS2sr = function(image) {
+  var scl = image.select('SCL');
+  var clearMask = scl.eq(4)  // Vegetation
+    .or(scl.eq(5))           // Bare soils
+    .or(scl.eq(6))           // Water
+    .or(scl.eq(7))           // Unclassified
+    .or(scl.eq(11));         // Snow/Ice
+  return image.updateMask(clearMask);
+};
+
+// 1.3 Calculate Spectral Indices & Tree Probability Proxy
+var addIndices = function(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  var nbr = image.normalizedDifference(['B8', 'B12']).rename('NBR');
+  
+  // Normalized Canopy / Tree Cover Probability Index
+  var treeProb = ndvi.add(nbr).divide(2).rename('tree_prob');
+  
+  return image.addBands([ndvi, nbr, treeProb]);
+};
+
+// 1.4 Area Calculation Pixel Helper (Hectares)
+var pixelAreaHa = ee.Image.pixelArea().divide(10000).rename('area_ha');
+
+
+// ============================================================
+// MODULE 2: BASELINE FOREST MASK & ANNUAL DROPS (2017-2025)
+// ============================================================
+
+// 2.1 Load Baseline Sentinel-2 Data (2017)
+var s2_2017 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(aoi)
+  .filterDate('2017-01-01', '2017-12-31')
+  .map(maskS2sr)
+  .map(addIndices);
+
+var baselineTree = s2_2017.select('tree_prob').median().clip(aoi);
+
+// Baseline Forest Mask (> 0.60 Tree Probability)
+var baselineForestMask = baselineTree.gt(0.60).rename('baseline_forest');
+var baselineHighTreeAreaHa = pixelAreaHa.updateMask(baselineForestMask)
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: aoi,
+    scale: 10,
+    maxPixels: 1e9
+  }).get('area_ha');
+
+// 2.2 Annual Image Collection Generation (2018–2025)
+var years = ee.List.sequence(2018, 2025);
+
+var annualDrops = ee.ImageCollection(years.map(function(y) {
+  var yearNum = ee.Number(y);
+  var startDate = ee.Date.fromYMD(yearNum, 1, 1);
+  var endDate = ee.Date.fromYMD(yearNum, 12, 31);
+  
+  var yearImg = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(aoi)
+    .filterDate(startDate, endDate)
+    .map(maskS2sr)
+    .map(addIndices)
+    .select('tree_prob')
+    .median()
+    .clip(aoi);
+    
+  // Calculate absolute drop from 2017 Baseline
+  var treeDrop = baselineTree.subtract(yearImg).rename('tree_drop');
+  
+  return treeDrop
+    .addBands(ee.Image.constant(yearNum).toInt16().rename('drop_year'))
+    .set('year', yearNum);
+}));
+
+// 2.3 Quality Mosaic for Maximum Annual Drop
+var maxDropComposite = annualDrops.qualityMosaic('tree_drop');
+var maxTreeDrop = maxDropComposite.select('tree_drop').updateMask(baselineForestMask);
+var maxDropYear = maxDropComposite.select('drop_year').updateMask(baselineForestMask);
+
+
+// ============================================================
+// MODULE 3: CANDIDATE DECLINE & SPATIAL FILTERING
+// ============================================================
+
+// 3.1 Substantial Decline Filter Threshold (> 0.25 Drop)
+var candidateDeclineMask = maxTreeDrop.gt(0.25)
+  .and(baselineForestMask)
+  .rename('candidate_decline');
+
+// 3.2 Spatial Filtering (Remove isolated noise < 0.5 ha / ~50 pixels)
+var connectedPixels = candidateDeclineMask.connectedPixelCount(100, true);
+var filteredCandidateMask = candidateDeclineMask.updateMask(connectedPixels.gte(50));
+
+
+// ============================================================
+// MODULE 4: PERSISTENT DECLINE & ONSET YEAR TRACKING
+// ============================================================
+
+// 4.1 Flag Annual Substantial Drops (> 0.25)
+var annualFlags = annualDrops.map(function(img) {
+  return img.select('tree_drop').gt(0.25)
+    .updateMask(baselineForestMask)
+    .rename('decline_flag')
+    .toByte()
+    .set('year', img.get('year'));
+}).sort('year');
+
+var flagList = annualFlags.toList(annualFlags.size());
+
+// 4.2 Track Consecutive Drop Pairs (Persistent Loss >= 2 Years)
+var consecutivePairs = ee.ImageCollection.fromImages(
+  ee.List.sequence(0, annualFlags.size().subtract(2)).map(function(i) {
+    var idx = ee.Number(i);
+    var img1 = ee.Image(flagList.get(idx));
+    var img2 = ee.Image(flagList.get(idx.add(1)));
+    
+    return img1.and(img2)
+      .rename('consecutive_decline')
+      .toByte()
+      .set('start_year', img1.get('year'))
+      .set('end_year', img2.get('year'));
+  })
+);
+
+var persistentDeclineMask = consecutivePairs.max().eq(1)
+  .and(baselineForestMask)
+  .rename('persistent_decline');
+
+// 4.3 First Onset Year of Persistent Loss
+var onsetCollection = consecutivePairs.map(function(img) {
+  var startYear = ee.Number(img.get('start_year')).toInt16();
+  return ee.Image.constant(startYear)
+    .rename('persistent_onset')
+    .toInt16()
+    .updateMask(img.eq(1))
+    .updateMask(persistentDeclineMask);
+});
+
+var persistentOnsetYear = onsetCollection.min().rename('persistent_onset');
+
+
+// ============================================================
+// MODULE 5: TEMPORAL DYNAMICS & LAG ANALYSIS
+// ============================================================
+
+// 5.1 Maximum Decline within Persistent Episode (Post-Onset)
+var episodeDrops = annualDrops.map(function(img) {
+  var year = ee.Number(img.get('year'));
+  var afterOnset = ee.Image.constant(year).toInt16().gte(persistentOnsetYear);
+  return img.updateMask(afterOnset).updateMask(persistentDeclineMask);
+});
+
+var episodeMaxComposite = episodeDrops.qualityMosaic('tree_drop');
+var episodeMaxYear = episodeMaxComposite.select('drop_year').rename('episode_max_year');
+
+// 5.2 Lag Years (Onset Year to Episode Peak Year)
+var lagYears = episodeMaxYear.subtract(persistentOnsetYear).rename('lag_years');
+
+// 5.3 Indicator Masks
+var lag2PlusMask = persistentDeclineMask.and(lagYears.gte(2));
+var maxIn2025Mask = persistentDeclineMask.and(episodeMaxYear.eq(2025));
+
+// 5.4 Area Summary Stats
+var persistentDeclineAreaHa = pixelAreaHa.updateMask(persistentDeclineMask)
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: aoi,
+    scale: 10,
+    maxPixels: 1e9
+  }).get('area_ha');
+
+
+// ============================================================
+// MODULE 6: TWO-WAY SENSITIVITY ANALYSIS & QC
+// ============================================================
+
+// ------------------------------------------------------------
+// HELPER: Universal Sensitivity Case Builder
+// ------------------------------------------------------------
+var buildSensitivityCase = function(dropThresh, tag) {
+  var flags = annualDrops.map(function(img) {
+    return img.select('tree_drop').gt(dropThresh).rename('flag').toByte().set('year', img.get('year'));
+  }).sort('year');
+  
+  var fList = flags.toList(flags.size());
+  var pairs = ee.ImageCollection.fromImages(
+    ee.List.sequence(0, flags.size().subtract(2)).map(function(i) {
+      var idx = ee.Number(i);
+      var img1 = ee.Image(fList.get(idx));
+      var img2 = ee.Image(fList.get(idx.add(1)));
+      return img1.and(img2).rename('pair').toByte().set('start_year', img1.get('year'));
+    })
+  );
+  
+  var persistent = pairs.max().eq(1).and(baselineForestMask);
+  var onset = pairs.map(function(img) {
+    return ee.Image.constant(ee.Number(img.get('start_year')).toInt16()).updateMask(img.eq(1));
+  }).min().toInt16();
+  
+  var epDrops = annualDrops.map(function(img) {
+    return img.updateMask(ee.Image.constant(ee.Number(img.get('year'))).toInt16().gte(onset)).updateMask(persistent);
+  });
+  
+  var epMaxYr = epDrops.qualityMosaic('tree_drop').select('drop_year');
+  var lag = epMaxYr.subtract(onset);
+  
+  var bands = ee.Image.cat([
+    pixelAreaHa.updateMask(maxTreeDrop.gt(dropThresh).and(baselineForestMask)).rename(tag + '_candidate_ha'),
+    pixelAreaHa.updateMask(persistent).rename(tag + '_persistent_ha'),
+    pixelAreaHa.updateMask(persistent.and(lag.gte(2))).rename(tag + '_lag2plus_ha'),
+    pixelAreaHa.updateMask(persistent.and(epMaxYr.eq(2025))).rename(tag + '_max2025_ha')
+  ]);
+  
+  return { areaBands: bands };
+};
+
+// ------------------------------------------------------------
+// PART 6A: DROP THRESHOLD SENSITIVITY (0.20, 0.25, 0.30)
+// ------------------------------------------------------------
+var dropCases = [
+  {thresh: 0.20, tag: 'T20'},
+  {thresh: 0.25, tag: 'T25'},
+  {thresh: 0.30, tag: 'T30'}
+];
+
+var dropSensitivityImage = ee.Image.cat(dropCases.map(function(c) {
+  return buildSensitivityCase(c.thresh, c.tag).areaBands;
+}));
+
+var dropSensitivityStats = dropSensitivityImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+
+var getDropArea = function(key) { return ee.Number(dropSensitivityStats.get(key, 0)); };
+
+var dropSummaryTable = ee.FeatureCollection(dropCases.map(function(c) {
+  var candArea = getDropArea(c.tag + '_candidate_ha');
+  var persArea = getDropArea(c.tag + '_persistent_ha');
+  var lag2Area = getDropArea(c.tag + '_lag2plus_ha');
+  var max25Area = getDropArea(c.tag + '_max2025_ha');
+  
+  return ee.Feature(null, {
+    'drop_threshold': c.thresh,
+    'candidate_area_ha': candArea,
+    'persistent_area_ha': persArea,
+    'persistent_pct_of_candidate': persArea.divide(candArea).multiply(100),
+    'lag_2plus_area_ha': lag2Area,
+    'lag_2plus_pct_of_persistent': lag2Area.divide(persArea).multiply(100),
+    'max_2025_area_ha': max25Area,
+    'max_2025_pct_of_persistent': max25Area.divide(persArea).multiply(100)
+  });
+}));
+
+print('DROP THRESHOLD SENSITIVITY SUMMARY:', dropSummaryTable);
+
+// ------------------------------------------------------------
+// PART 6B: BASELINE THRESHOLD SENSITIVITY (0.55, 0.60, 0.65)
+// ------------------------------------------------------------
+var baseCases = [
+  {thresh: 0.55, tag: 'B55'},
+  {thresh: 0.60, tag: 'B60'},
+  {thresh: 0.65, tag: 'B65'}
+];
+
+var rawMaxTreeDrop = maxDropComposite.select('tree_drop');
+
+var baseSensitivityImage = ee.Image.cat(baseCases.map(function(c) {
+  var bMask = baselineTree.gt(c.thresh);
+  var cand = bMask.and(rawMaxTreeDrop.gt(0.25));
+  
+  var flags = annualDrops.map(function(img) {
+    return img.select('tree_drop').gt(0.25).rename('flag').toByte().set('year', img.get('year'));
+  }).sort('year');
+  var fList = flags.toList(flags.size());
+  
+  var pairs = ee.ImageCollection.fromImages(
+    ee.List.sequence(0, flags.size().subtract(2)).map(function(i) {
+      var idx = ee.Number(i);
+      var img1 = ee.Image(fList.get(idx));
+      var img2 = ee.Image(fList.get(idx.add(1)));
+      return img1.and(img2).rename('pair').toByte().set('start_year', img1.get('year'));
+    })
+  );
+  
+  var pers = pairs.max().eq(1).and(bMask);
+  var onset = pairs.map(function(img) {
+    return ee.Image.constant(ee.Number(img.get('start_year')).toInt16()).updateMask(img.eq(1));
+  }).min().toInt16();
+  
+  var epDrops = annualDrops.map(function(img) {
+    return img.updateMask(ee.Image.constant(ee.Number(img.get('year'))).toInt16().gte(onset)).updateMask(pers);
+  });
+  var epMaxYr = epDrops.qualityMosaic('tree_drop').select('drop_year');
+  var lag = epMaxYr.subtract(onset);
+
+  return ee.Image.cat([
+    pixelAreaHa.updateMask(bMask).rename(c.tag + '_baseline_ha'),
+    pixelAreaHa.updateMask(cand).rename(c.tag + '_candidate_ha'),
+    pixelAreaHa.updateMask(pers).rename(c.tag + '_persistent_ha'),
+    pixelAreaHa.updateMask(pers.and(lag.gte(2))).rename(c.tag + '_lag2plus_ha'),
+    pixelAreaHa.updateMask(pers.and(epMaxYr.eq(2025))).rename(c.tag + '_max2025_ha')
+  ]);
+}));
+
+var baseSensitivityStats = baseSensitivityImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+
+var getBaseArea = function(key) { return ee.Number(baseSensitivityStats.get(key, 0)); };
+
+var baseSummaryTable = ee.FeatureCollection(baseCases.map(function(c) {
+  var bArea = getBaseArea(c.tag + '_baseline_ha');
+  var cArea = getBaseArea(c.tag + '_candidate_ha');
+  var pArea = getBaseArea(c.tag + '_persistent_ha');
+  var l2Area = getBaseArea(c.tag + '_lag2plus_ha');
+  var m25Area = getBaseArea(c.tag + '_max2025_ha');
+  
+  return ee.Feature(null, {
+    'baseline_tree_threshold': c.thresh,
+    'baseline_area_ha': bArea,
+    'candidate_area_ha': cArea,
+    'persistent_area_ha': pArea,
+    'persistent_pct_of_baseline': pArea.divide(bArea).multiply(100),
+    'persistent_pct_of_candidate': pArea.divide(cArea).multiply(100),
+    'lag_2plus_area_ha': l2Area,
+    'lag_2plus_pct_of_persistent': l2Area.divide(pArea).multiply(100),
+    'max_2025_area_ha': m25Area,
+    'max_2025_pct_of_persistent': m25Area.divide(pArea).multiply(100)
+  });
+}));
+
+print('BASELINE THRESHOLD SENSITIVITY SUMMARY:', baseSummaryTable);
+
+// ------------------------------------------------------------
+// PART 6C: QUALITY CONTROL (QC) CHECKS
+// ------------------------------------------------------------
+var qcT25Pers = getDropArea('T25_persistent_ha');
+var qcB60Pers = getBaseArea('B60_persistent_ha');
+
+print('QC Check - T25 Area (ha):', qcT25Pers);
+print('QC Check - B60 Area (ha):', qcB60Pers);
+print('QC Check - Main Pipeline Area (ha):', persistentDeclineAreaHa);
+
+// ------------------------------------------------------------
+// PART 6D: UI SUMMARY CHARTS
+// ------------------------------------------------------------
+var dropChart = ui.Chart.feature.byFeature(dropSummaryTable, 'drop_threshold', ['persistent_area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Sensitivity of Persistent Tree-Decline Area to Drop Threshold',
+    hAxis: { title: 'Tree-Probability Drop Threshold' },
+    vAxis: { title: 'Persistent Candidate Area (ha)' },
+    legend: { position: 'none' }
+  });
+
+var baseChart = ui.Chart.feature.byFeature(baseSummaryTable, 'baseline_tree_threshold', ['persistent_area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Sensitivity of Persistent Tree-Decline Area to 2017 Baseline Threshold',
+    hAxis: { title: '2017 Tree-Probability Threshold' },
+    vAxis: { title: 'Persistent Candidate Area (ha)' },
+    legend: { position: 'none' }
+  });
+
+print(dropChart);
+print(baseChart);
