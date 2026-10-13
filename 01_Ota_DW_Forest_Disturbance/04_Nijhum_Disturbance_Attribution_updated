@@ -1,0 +1,2091 @@
+// ============================================================
+// প্রকল্প ০১ — নিঝুম দ্বীপ: বৃক্ষ-আচ্ছাদন হ্রাসের সম্ভাব্য কারণ বিশ্লেষণ
+// মূল ফাইল: 04_Nijhum_Disturbance_Attribution.js
+// বিশ্লেষণের ধরন: সম্ভাব্য বৃক্ষ-ক্ষয় (Candidate Disturbance) শনাক্ত ও ব্যাখ্যা
+//
+// গবেষণা এলাকা: নিঝুম দ্বীপ জাতীয় উদ্যান, বাংলাদেশ | SITE_ID: 317318
+// ভিত্তিবর্ষ: ২০১৭ | পরিবর্তনের আগের তুলনাবর্ষ: ২০২৩ | পরবর্তী অবস্থা: ২০২৪–২০২৫ সালের গড়
+//
+// মূল লক্ষ্য: (১) ধারাবাহিক বৃক্ষ-হ্রাস শনাক্ত; (২) নির্দিষ্ট পিক্সেলে শ্রেণির Probability পর্যবেক্ষণ;
+// (৩) ক্ষতিগ্রস্ত প্যাচের পরিবর্তনের ধারা; (৪) trees কমলে কোন শ্রেণির Probability বাড়ে তা দেখা;
+// (৫) সম্ভাব্য পরিবর্তনের শ্রেণিভিত্তিক মানচিত্র; (৬) Sentinel-2 দিয়ে দৃশ্যগত যাচাই।
+//
+// সতর্কতা: এটি Ota-অনুপ্রাণিত অনুসন্ধানধর্মী বিশ্লেষণ; Li, Ota ও Mizoue-এর মূল
+// Disturbance Attribution অ্যালগরিদমের হুবহু বাস্তবায়ন নয়।
+// ============================================================
+// ------------------------------------------------------------
+// 1. AOI (গবেষণা এলাকার সীমানা) লোড
+// ------------------------------------------------------------
+// WDPA থেকে SITE_ID দিয়ে নিঝুম দ্বীপের সীমানা আলাদা করা হচ্ছে।
+var wdpa = ee.FeatureCollection('WCMC/WDPA/current/polygons');
+var nijhum = wdpa.filter(ee.Filter.eq('SITE_ID', 317318));
+var aoi = nijhum.geometry();
+Map.centerObject(aoi, 11);
+Map.addLayer(nijhum, { color: 'yellow' }, 'Nijhum Dwip Boundary', false);
+print('Nijhum Dwip:', nijhum);
+print('Matched features:', nijhum.size());
+
+// ------------------------------------------------------------
+// 2. Dynamic World ডেটাসেট লোড ও সময়/এলাকা অনুযায়ী ফিল্টার
+// ------------------------------------------------------------
+// AOI, সময় এবং নভেম্বর–ডিসেম্বর বেছে নিয়ে মৌসুমি তুলনা সামঞ্জস্যপূর্ণ রাখা হচ্ছে।
+var dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+  .filterBounds(aoi)
+  .filterDate('2016-01-01', '2026-01-01')
+  .filter(ee.Filter.calendarRange(11, 12, 'month'));
+var probabilityBands = [
+  'water',
+  'trees',
+  'grass',
+  'flooded_vegetation',
+  'crops',
+  'shrub_and_scrub',
+  'built',
+  'bare',
+  'snow_and_ice'
+];
+var dw9 = dw.select(probabilityBands);
+
+// ------------------------------------------------------------
+// 3. প্রতিবছরের ৯-ব্যান্ড Probability ImageCollection তৈরি
+// ------------------------------------------------------------
+// প্রতিটি বছরের নভেম্বর–ডিসেম্বরের Median নিয়ে একটি ৯-ব্যান্ড ইমেজ তৈরি হবে।
+var years = ee.List.sequence(2016, 2025);
+var annualDW9 = ee.ImageCollection.fromImages(years.map(function(year) {
+  year = ee.Number(year);
+  var start = ee.Date.fromYMD(year, 11, 1);
+  var end = ee.Date.fromYMD(year.add(1), 1, 1);
+  var yearlyDW = dw9.filterDate(start, end);
+  var annualImage = yearlyDW.median().clip(aoi);
+  return annualImage
+    .set('year', year)
+    .set('system:time_start', ee.Date.fromYMD(year, 12, 1).millis())
+    .set('image_count', yearlyDW.size());
+}));
+print('Annual 9-band Dynamic World collection:', annualDW9);
+
+// ------------------------------------------------------------
+// 4. ২০১৭ সালের উচ্চ trees-Probability-কে Baseline ধরা
+// ------------------------------------------------------------
+// ২০১৭-এ trees Probability > 0.60 হলে Baseline Forest Pixel হিসেবে ধরা হচ্ছে।
+var baselineYear = 2017;
+var baselineImage = ee.Image(annualDW9.filter(ee.Filter.eq('year', baselineYear)).first());
+var baselineTree = baselineImage.select('trees').rename('baseline_tree');
+var baselineTreeThreshold = 0.60;
+var baselineForestMask = baselineTree.gt(baselineTreeThreshold);
+Map.addLayer(baselineForestMask.selfMask(), { palette: ['darkgreen'] }, '2017 High-Tree Baseline (>0.60)', false);
+
+// ------------------------------------------------------------
+// 5. ২০১৭-পরবর্তী বছরগুলোর trees-Probability হ্রাস নির্ণয়
+// ------------------------------------------------------------
+// হ্রাস = ২০১৭-এর trees Probability − সংশ্লিষ্ট বছরের trees Probability।
+var post2017 = annualDW9.filter(ee.Filter.gt('year', baselineYear));
+var annualDrops = post2017.map(function(image) {
+  var year = ee.Number(image.get('year'));
+  var currentTree = image.select('trees');
+  var treeDrop = baselineTree.subtract(currentTree).rename('tree_drop');
+  var yearBand = ee.Image.constant(year).rename('drop_year').toInt16();
+  return image
+    .addBands(treeDrop)
+    .addBands(yearBand)
+    .set('year', year)
+    .copyProperties(image, ['system:time_start']);
+});
+
+// ------------------------------------------------------------
+// 6. সবচেয়ে বেশি trees-Probability কমেছে কত ও কোন বছরে, তা বের করা
+// ------------------------------------------------------------
+// qualityMosaic() সর্বোচ্চ tree_drop-যুক্ত বছরের পিক্সেল ও বছর একসঙ্গে ধরে।
+var maxDropComposite = annualDrops.qualityMosaic('tree_drop');
+var maxTreeDrop = maxDropComposite.select('tree_drop').updateMask(baselineForestMask);
+var maxDropYear = maxDropComposite.select('drop_year').updateMask(baselineForestMask);
+
+// ------------------------------------------------------------
+// 7. সম্ভাব্য, পুনরাবৃত্ত ও ধারাবাহিক বৃক্ষ-হ্রাসের Mask তৈরি
+// ------------------------------------------------------------
+var dropThreshold = 0.25;
+
+// ------------------------------------------------------------
+// 7A. অন্তত এক বছরে উল্লেখযোগ্য হ্রাস ঘটেছে এমন পিক্সেল
+// ------------------------------------------------------------
+var candidateDisturbance = baselineForestMask.and(maxTreeDrop.gt(dropThreshold));
+
+// ------------------------------------------------------------
+// 7B. কতটি বছরে উল্লেখযোগ্য হ্রাস হয়েছে, তা গণনা
+// ------------------------------------------------------------
+// প্রতিবছর dropThreshold পার করলে 1; পরে .sum() করে এমন বছরের সংখ্যা।
+var declineFlags = annualDrops
+  .map(function(image) {
+    return image
+      .select('tree_drop')
+      .gt(dropThreshold)
+      .rename('substantial_decline')
+      .toByte()
+      .set('year', image.get('year'));
+  })
+  .sort('year');
+var declineYearCount = declineFlags
+  .sum()
+  .rename('decline_year_count')
+  .updateMask(baselineForestMask);
+
+// ------------------------------------------------------------
+// 7C. যেকোনো দুটি বা বেশি বছরে হ্রাস পাওয়া পিক্সেল
+// ------------------------------------------------------------
+// অন্তত ২টি বছরে হ্রাস হলেই Repeated; বছর দুটি পরপর হওয়া বাধ্যতামূলক নয়।
+// এটি আগের পদ্ধতির সঙ্গে তুলনার জন্য রাখা হয়েছে।
+var repeatedCandidate = candidateDisturbance.and(declineYearCount.gte(2));
+
+// ------------------------------------------------------------
+// 7D. পরপর দুটি বছরে হ্রাস ঘটেছে কি না পরীক্ষা
+// ------------------------------------------------------------
+// পাশাপাশি দুই বছরের Boolean Mask-এর .and() দিয়ে ধারাবাহিকতা পরীক্ষা।
+var declineList = declineFlags.toList(declineFlags.size());
+var consecutivePairImages = ee.ImageCollection.fromImages(ee.List.sequence(0, declineFlags.size().subtract(2))
+  .map(function(i) {
+    i = ee.Number(i);
+    var firstImage = ee.Image(declineList.get(i));
+    var secondImage = ee.Image(declineList.get(i.add(1)));
+    // দুটি পরপর বছরের হ্রাসই Threshold ছাড়ালে কেবল 1 পাওয়া যাবে।
+    var consecutiveDecline = firstImage.and(secondImage).rename('consecutive_decline').toByte();
+    return consecutiveDecline
+      .set('start_year', firstImage.get('year'))
+      .set('end_year', secondImage.get('year'));
+  }));
+
+// ------------------------------------------------------------
+// 7E. প্রকৃত ধারাবাহিক হ্রাসের (Persistent) Mask
+// ------------------------------------------------------------
+// অন্তত এক জোড়া পরপর বছরে trees-হ্রাস Threshold-এর বেশি হলেই Persistent।
+var persistentCandidate = consecutivePairImages
+  .max()
+  .eq(1)
+  .and(baselineForestMask)
+  .rename('persistent_candidate');
+
+// ------------------------------------------------------------
+// 7F. বিভিন্ন হ্রাসের Mask মানচিত্রে তুলনা
+// ------------------------------------------------------------
+Map.addLayer(repeatedCandidate
+  .selfMask(), { palette: ['orange'] }, 'Repeated Decline (>=2 years, any years)', false);
+Map.addLayer(persistentCandidate
+  .selfMask(), { palette: ['magenta'] }, 'Persistent Decline (>=2 consecutive years)', true);
+
+// ------------------------------------------------------------
+// 8. অনুসন্ধানমূলক যাচাইয়ের জন্য একটি Candidate Point নির্বাচন
+// ------------------------------------------------------------
+// বেশি হ্রাস হওয়া নমুনা থেকে একটি পয়েন্ট নিয়ে বিশদভাবে দেখা হচ্ছে।
+var candidateImage = maxTreeDrop
+  .rename('max_tree_drop')
+  .addBands(maxDropYear.rename('max_drop_year'))
+  .addBands(declineYearCount)
+  .updateMask(candidateDisturbance);
+var candidateSamples = candidateImage.sample({
+  region: aoi,
+  scale: 10,
+  numPixels: 100,
+  seed: 42,
+  geometries: true
+});
+var rankedCandidates = candidateSamples.sort('max_tree_drop', false);
+var candidatePointFeature = ee.Feature(rankedCandidates.first());
+var candidatePoint = candidatePointFeature.geometry();
+Map.addLayer(candidatePoint, { color: 'cyan' }, 'Selected Candidate Point', true);
+print('Selected candidate:', candidatePointFeature);
+
+// ============================================================
+// অংশ A
+// নির্বাচিত পিক্সেলের পরিবর্তনের সম্ভাব্য কারণ
+// ============================================================
+// ------------------------------------------------------------
+// 9. নির্বাচিত পিক্সেলে সময় অনুযায়ী সব গুরুত্বপূর্ণ Probability-এর রেখাচিত্র
+// ------------------------------------------------------------
+var candidateChart = ui.Chart.image.series({
+  imageCollection: annualDW9.select([
+    'trees',
+    'water',
+    'grass',
+    'flooded_vegetation',
+    'crops',
+    'shrub_and_scrub',
+    'built',
+    'bare'
+  ]),
+  region: candidatePoint,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+})
+  .setOptions({
+    title: 'Dynamic World Probabilities — Candidate Disturbance Pixel',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Probability', viewWindow: { min: 0, max: 1 } },
+    lineWidth: 2,
+    pointSize: 5
+  });
+print(candidateChart);
+
+// ------------------------------------------------------------
+// 10. Candidate Point-এর প্রতিবছরের Probability টেবিল
+// ------------------------------------------------------------
+// reduceRegion() দিয়ে নির্বাচিত পয়েন্টের প্রতিটি বছরের Probability পড়া হচ্ছে।
+var candidateSeries = ee.FeatureCollection(annualDW9.map(function(image) {
+  var values = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: candidatePoint,
+    scale: 10,
+    bestEffort: true
+  });
+  return ee.Feature(null, {
+    year: image.get('year'),
+    trees: values.get('trees'),
+    water: values.get('water'),
+    grass: values.get('grass'),
+    flooded_vegetation: values.get('flooded_vegetation'),
+    crops: values.get('crops'),
+    shrub_and_scrub: values.get('shrub_and_scrub'),
+    built: values.get('built'),
+    bare: values.get('bare')
+  });
+}));
+print('Candidate annual probability table:', candidateSeries);
+
+// ------------------------------------------------------------
+// 11. ২০২৩, ২০২৪ ও ২০২৫ সালের পরিবর্তনে বিশেষ নজর
+// ------------------------------------------------------------
+var candidateRecent = candidateSeries.filter(ee.Filter.gte('year', 2023));
+print('Candidate values — 2023 to 2025:', candidateRecent);
+
+// ============================================================
+// অংশ B
+// ধারাবাহিক হ্রাসযুক্ত পুরো Patch-এর বিশ্লেষণ
+// ============================================================
+// ------------------------------------------------------------
+// 12. Persistent Candidate পিক্সেলে বার্ষিক ইমেজ সীমাবদ্ধ করা
+// ------------------------------------------------------------
+var persistentAnnual = annualDW9.map(function(image) {
+  return image.updateMask(persistentCandidate).copyProperties(image, ['year', 'system:time_start']);
+});
+
+// ------------------------------------------------------------
+// 13. সব Persistent পিক্সেলের গড় Probability-র সময়ভিত্তিক ধারা
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// পরিমার্জিত অংশ:
+// Persistent Candidate পিক্সেলজুড়ে বার্ষিক গড় Probability-র ধারা
+// ------------------------------------------------------------
+var trajectoryBands = ['trees', 'water', 'flooded_vegetation', 'crops', 'shrub_and_scrub', 'bare'];
+// সব Persistent পিক্সেলের গড় নিয়ে আলাদা বার্ষিক Feature তৈরি হচ্ছে।
+var persistentSeries = ee.FeatureCollection(annualDW9.map(function(image) {
+  var stats = image
+    .select(trajectoryBands)
+    .updateMask(persistentCandidate)
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  return ee.Feature(null, stats)
+    .set('year', image.get('year'))
+    .set('system:time_start', image.get('system:time_start'));
+}));
+print('Annual mean probabilities — persistent candidate pixels:', persistentSeries);
+var persistentPatchChart = ui.Chart.feature.byFeature(persistentSeries, 'year', trajectoryBands)
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Mean Probability Trajectory — Persistent Candidate Pixels',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Mean Probability', viewWindow: { min: 0, max: 1 } },
+    lineWidth: 2,
+    pointSize: 5
+  });
+print(persistentPatchChart);
+
+// ============================================================
+// অংশ C
+// পরিবর্তনের আগে ও পরের Probability তুলনা
+// ============================================================
+// ------------------------------------------------------------
+// 14. ২০২৩–২০২৫ সালের আলাদা বার্ষিক ইমেজ সংগ্রহ
+// ------------------------------------------------------------
+var image2023 = ee.Image(annualDW9.filter(ee.Filter.eq('year', 2023)).first());
+var image2024 = ee.Image(annualDW9.filter(ee.Filter.eq('year', 2024)).first());
+var image2025 = ee.Image(annualDW9.filter(ee.Filter.eq('year', 2025)).first());
+
+// ------------------------------------------------------------
+// 15. পরিবর্তন-পরবর্তী (২০২৪–২০২৫) গড় ইমেজ তৈরি
+// ------------------------------------------------------------
+// শুধু ২০২৫ নয়; ২০২৪ ও ২০২৫-এর গড় নিয়ে স্থায়ী পরিবর্তনের প্রভাব দেখা হচ্ছে।
+var postDisturbance = ee.ImageCollection.fromImages([image2024, image2025]).mean();
+
+// ------------------------------------------------------------
+// 16. trees-Probability পরিবর্তন = পরবর্তী গড় − ২০২৩
+// ------------------------------------------------------------
+// Positive ফল মানে trees Probability বেড়েছে, Negative মানে কমেছে।
+var treeChange = postDisturbance
+  .select('trees')
+  .subtract(image2023.select('trees'))
+  .rename('tree_change')
+  .updateMask(persistentCandidate);
+Map.addLayer(treeChange, {
+  min: -0.60,
+  max: 0.20,
+  palette: ['darkred', 'red', 'orange', 'white', 'green']
+}, 'Tree Change: 2023 → mean(2024-2025)', true);
+
+// ------------------------------------------------------------
+// 17. সম্ভাব্য নতুন ভূমি-আচ্ছাদন শ্রেণিগুলোর Probability পরিবর্তন
+// ------------------------------------------------------------
+// প্রতিটি Non-tree শ্রেণিতে পরের গড় থেকে ২০২৩-এর Probability বিয়োগ।
+var attributionBands = [
+  'water',
+  'grass',
+  'flooded_vegetation',
+  'crops',
+  'shrub_and_scrub',
+  'built',
+  'bare'
+];
+var classChanges = postDisturbance
+  .select(attributionBands)
+  .subtract(image2023.select(attributionBands))
+  .updateMask(persistentCandidate);
+print('Post-minus-pre class change image:', classChanges);
+
+// ------------------------------------------------------------
+// 18. Persistent এলাকায় শ্রেণিভিত্তিক গড় Probability পরিবর্তন
+// ------------------------------------------------------------
+// ধনাত্মক (+) মানে শ্রেণির Probability বেড়েছে; ঋণাত্মক (−) মানে কমেছে।
+var meanClassChanges = classChanges.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+print('MEAN CLASS CHANGES across persistent candidates:', meanClassChanges);
+
+// ------------------------------------------------------------
+// 19. যেসব শ্রেণির Probability বেড়েছে, সেগুলোর মানচিত্র
+// ------------------------------------------------------------
+Map.addLayer(classChanges.select('water'), {
+  min: -0.30,
+  max: 0.30,
+  palette: ['red', 'white', 'blue']
+}, 'Water Change — Post vs 2023', false);
+Map.addLayer(classChanges.select('flooded_vegetation'), {
+  min: -0.30,
+  max: 0.30,
+  palette: ['red', 'white', 'green']
+}, 'Flooded Vegetation Change — Post vs 2023', false);
+Map.addLayer(classChanges.select('crops'), {
+  min: -0.30,
+  max: 0.30,
+  palette: ['red', 'white', 'yellow']
+}, 'Crops Change — Post vs 2023', false);
+Map.addLayer(classChanges.select('shrub_and_scrub'), {
+  min: -0.30,
+  max: 0.30,
+  palette: ['red', 'white', 'green']
+}, 'Shrub/Scrub Change — Post vs 2023', false);
+Map.addLayer(classChanges.select('bare'), {
+  min: -0.30,
+  max: 0.30,
+  palette: ['green', 'white', 'brown']
+}, 'Bare Change — Post vs 2023', false);
+
+// ============================================================
+// অংশ D
+// যে শ্রেণি সবচেয়ে বেড়েছে, তার ভিত্তিতে সম্ভাব্য পরিবর্তন
+// ============================================================
+// ------------------------------------------------------------
+// 20. কোন শ্রেণির Probability সবচেয়ে বেশি বেড়েছে, তা নির্ণয়
+// ------------------------------------------------------------
+// attributionBands-এর ক্রম: 0=water, 1=grass, 2=flooded_vegetation,
+// 3=crops, 4=shrub_and_scrub, 5=built, 6=bare।
+// মানচিত্রের শ্রেণি-কোডের সুবিধায় এগুলো পরে 1–7 করা হয়েছে।
+// ------------------------------------------------------------
+// সব শ্রেণির বৃদ্ধি তুলনা করে সবচেয়ে বেশি বেড়েছে যে শ্রেণি, তার Code রাখা।
+var dominantGainCode = classChanges
+  .toArray()
+  .arrayArgmax()
+  .arrayGet([0])
+  .add(1)
+  .rename('dominant_gain_class')
+  .updateMask(persistentCandidate);
+print('Dominant gain class codes:', '1=water, 2=grass, 3=flooded vegetation, ' +
+  '4=crops, 5=shrub/scrub, 6=built, 7=bare');
+Map.addLayer(dominantGainCode, {
+  min: 1,
+  max: 7,
+  palette: [
+    'blue', // 1 = জলাশয় (water)
+    'lightgreen', // 2 = ঘাস (grass)
+    'cyan', // 3 = প্লাবিত উদ্ভিদ
+    'yellow', // 4 = ফসলি জমি
+    'green', // 5 = ঝোপঝাড়
+    'red', // 6 = নির্মিত এলাকা
+    'brown' // 7 = অনাবৃত ভূমি
+  ]
+}, 'Dominant Probability Gain Class', true);
+
+// ------------------------------------------------------------
+// 21. নির্বাচিত Candidate Point-এর প্রধান বৃদ্ধি পাওয়া শ্রেণি
+// ------------------------------------------------------------
+var dominantAtPoint = dominantGainCode.reduceRegion({
+  reducer: ee.Reducer.first(),
+  geometry: candidatePoint,
+  scale: 10,
+  bestEffort: true
+});
+print('Dominant post-disturbance gain class at candidate point:', dominantAtPoint);
+
+// ============================================================
+// অংশ E
+// Sentinel-2 ইমেজ দেখে পরিবর্তন যাচাই
+// ============================================================
+// ------------------------------------------------------------
+// 22. Sentinel-2 ও Cloud Score+ কালেকশন লোড
+// ------------------------------------------------------------
+// Cloud Score+-এর সঙ্গে Link করে পরিষ্কার Sentinel-2 পর্যবেক্ষণ রাখা।
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(aoi)
+  .filterDate('2023-01-01', '2026-01-01');
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+// Cloud Score+ থেকে Sentinel-2-এর সঙ্গে মেঘমুক্ত মানের ব্যান্ড যুক্ত করা হচ্ছে।
+var s2Linked = s2.linkCollection(csPlus, ['cs_cdf']);
+// নিম্নমানের/মেঘযুক্ত পিক্সেল Mask করা হচ্ছে।
+var s2Clean = s2Linked.map(function(image) {
+  return image.updateMask(image.select('cs_cdf').gte(0.60));
+});
+
+// ------------------------------------------------------------
+// 23. নভেম্বর–ডিসেম্বরের Sentinel-2 Composite তৈরি
+// ------------------------------------------------------------
+var getS2Composite = function(year) {
+  var start = ee.Date.fromYMD(year, 11, 1);
+  var end = ee.Date.fromYMD(year + 1, 1, 1);
+  return s2Clean.filterDate(start, end).median().clip(aoi);
+};
+var s2_2023 = getS2Composite(2023);
+var s2_2024 = getS2Composite(2024);
+var s2_2025 = getS2Composite(2025);
+
+// ------------------------------------------------------------
+// 24. প্রাকৃতিক রঙে (True Color) মানচিত্র প্রদর্শন
+// ------------------------------------------------------------
+var trueColor = { bands: ['B4', 'B3', 'B2'], min: 0, max: 3000 };
+Map.addLayer(s2_2023, trueColor, 'Sentinel-2 True Color — Nov-Dec 2023', false);
+Map.addLayer(s2_2024, trueColor, 'Sentinel-2 True Color — Nov-Dec 2024', false);
+Map.addLayer(s2_2025, trueColor, 'Sentinel-2 True Color — Nov-Dec 2025', false);
+
+// ------------------------------------------------------------
+// 25. উদ্ভিদ শনাক্তে False Color মানচিত্র প্রদর্শন
+// ------------------------------------------------------------
+var falseColor = { bands: ['B8', 'B4', 'B3'], min: 0, max: 4000 };
+Map.addLayer(s2_2023, falseColor, 'Sentinel-2 False Color — 2023', false);
+Map.addLayer(s2_2024, falseColor, 'Sentinel-2 False Color — 2024', false);
+Map.addLayer(s2_2025, falseColor, 'Sentinel-2 False Color — 2025', false);
+
+// ============================================================
+// ফলাফল বোঝার নির্দেশিকা (এগুলো সম্ভাবনা, নিশ্চিত কারণ নয়)
+// ধাপ ১: নির্বাচিত পিক্সেলে ২০২৪ ও ২০২৫-এ trees-Probability সত্যিই কমেছে কি না দেখুন।
+// ধাপ ২: trees কমার বিপরীতে কোন শ্রেণির Probability বাড়ছে, মিলিয়ে দেখুন:
+//   trees ↓ + water ↑ : প্লাবন, ভাঙন বা পানিতে রূপান্তরের সম্ভাবনা।
+//   trees ↓ + bare ↑ : মাটি উন্মুক্ত হওয়া, ভাঙন বা পরিষ্কারের সম্ভাবনা।
+//   trees ↓ + crops ↑ : কৃষিভূমিসদৃশ আচ্ছাদনে রূপান্তরের সম্ভাবনা।
+//   trees ↓ + shrub_and_scrub ↑ : বন অবক্ষয়/গাছের ঘনত্ব হ্রাস/ঝোপ বৃদ্ধির সম্ভাবনা।
+//   trees ↓ + flooded_vegetation ↑ : জলাভূমি বা প্লাবিত উদ্ভিদের দিকে পরিবর্তন।
+// ধাপ ৩: একই ধারা শুধু একটি পিক্সেলে নয়, Persistent Patch-জুড়েও আছে কি না দেখুন।
+// ধাপ ৪: Sentinel-2-তে ২০২৩ (আগে), ২০২৪ (শুরু), ২০২৫ (পরের অবস্থা) তুলনা করুন।
+// সতর্কতা: প্রধান বৃদ্ধি পাওয়া শ্রেণি একাই ভাঙন/বন উজাড়/কৃষি/প্লাবন প্রমাণ করে না।
+// চূড়ান্ত ব্যাখ্যায় স্থানিক সামঞ্জস্য, ধারাবাহিকতা, Sentinel-2 ও বাহ্যিক তথ্য দরকার।
+// ============================================================
+
+// ============================================================
+// অংশ F
+// NDVI ও MNDWI দিয়ে অতিরিক্ত যাচাই
+// ============================================================
+//
+// উদ্দেশ্য: Dynamic World-এ trees-Probability কমার সঙ্গে Sentinel-2-এর সূচকও বদলেছে কি না যাচাই।
+// NDVI = উদ্ভিদের সবুজত্ব/সক্রিয়তার সূচক; MNDWI = পৃষ্ঠজল/আর্দ্রতার সূচক।
+// ------------------------------------------------------------
+// 26. Sentinel-2 ইমেজে NDVI ও MNDWI যোগের ফাংশন
+// ------------------------------------------------------------
+// Sentinel-2 ব্যান্ড দিয়ে সূচক গণনা:
+// NDVI  = (B8 - B4) / (B8 + B4)
+// MNDWI = (B3 - B11) / (B3 + B11)
+// B8 = NIR (নিকট অবলোহিত); B4 = Red (লাল); B3 = Green (সবুজ); B11 = SWIR (স্বল্পতরঙ্গ অবলোহিত)।
+// B11 = SWIR (স্বল্পতরঙ্গ অবলোহিত)।
+// ------------------------------------------------------------
+var addIndices = function(image) {
+  // normalizedDifference() দিয়ে দুটি সূচক আলাদা ব্যান্ডে যোগ করা হচ্ছে।
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename('MNDWI');
+  return image.addBands(ndvi).addBands(mndwi);
+};
+
+// ------------------------------------------------------------
+// 27. ২০২৩–২০২৫ সালের Composite-এ NDVI ও MNDWI যোগ
+// ------------------------------------------------------------
+var index2023 = addIndices(s2_2023);
+var index2024 = addIndices(s2_2024);
+var index2025 = addIndices(s2_2025);
+
+// ------------------------------------------------------------
+// 28. NDVI-এর মানচিত্র
+// ------------------------------------------------------------
+var ndviVis = { min: 0, max: 0.8, palette: ['white', 'yellow', 'lightgreen', 'darkgreen'] };
+Map.addLayer(index2023.select('NDVI'), ndviVis, 'NDVI — 2023', false);
+Map.addLayer(index2024.select('NDVI'), ndviVis, 'NDVI — 2024', false);
+Map.addLayer(index2025.select('NDVI'), ndviVis, 'NDVI — 2025', false);
+
+// ------------------------------------------------------------
+// 29. MNDWI-এর মানচিত্র
+// ------------------------------------------------------------
+var mndwiVis = { min: -0.5, max: 0.5, palette: ['brown', 'white', 'lightblue', 'blue'] };
+Map.addLayer(index2023.select('MNDWI'), mndwiVis, 'MNDWI — 2023', false);
+Map.addLayer(index2024.select('MNDWI'), mndwiVis, 'MNDWI — 2024', false);
+Map.addLayer(index2025.select('MNDWI'), mndwiVis, 'MNDWI — 2025', false);
+
+// ============================================================
+// অংশ G
+// নির্বাচিত Candidate Point-এ সূচক বিশ্লেষণ
+// ============================================================
+// ------------------------------------------------------------
+// 30. Candidate Point থেকে NDVI ও MNDWI-এর মান বের করা
+// ------------------------------------------------------------
+var candidateIndexSeries = ee.FeatureCollection([
+  ee.Feature(null, index2023
+    .select(['NDVI', 'MNDWI'])
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: candidatePoint,
+      scale: 10,
+      bestEffort: true
+    }))
+    .set('year', 2023),
+  ee.Feature(null, index2024
+    .select(['NDVI', 'MNDWI'])
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: candidatePoint,
+      scale: 10,
+      bestEffort: true
+    }))
+    .set('year', 2024),
+  ee.Feature(null, index2025
+    .select(['NDVI', 'MNDWI'])
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: candidatePoint,
+      scale: 10,
+      bestEffort: true
+    }))
+    .set('year', 2025)
+]);
+print('Candidate-point NDVI + MNDWI:', candidateIndexSeries);
+
+// ------------------------------------------------------------
+// 31. Candidate Point-এর NDVI–MNDWI রেখাচিত্র
+// ------------------------------------------------------------
+var candidateIndexChart = ui.Chart.feature.byFeature(candidateIndexSeries, 'year', [
+  'NDVI',
+  'MNDWI'
+])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'NDVI and MNDWI — Candidate Disturbance Pixel',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Index Value', viewWindow: { min: -1, max: 1 } },
+    lineWidth: 2,
+    pointSize: 7
+  });
+print(candidateIndexChart);
+
+// ============================================================
+// অংশ H
+// ধারাবাহিক বৃক্ষ-হ্রাসযুক্ত Patch-এর সূচক বিশ্লেষণ
+// ============================================================
+// ------------------------------------------------------------
+// 32. Persistent Patch-জুড়ে সূচকের গড় হিসাবের ফাংশন
+// ------------------------------------------------------------
+// Persistent Mask-এর ভেতরে reduceRegion() দিয়ে Patch-এর গড় সূচক নির্ণয়।
+var getPatchStats = function(image, year) {
+  var stats = image
+    .select(['NDVI', 'MNDWI'])
+    .updateMask(persistentCandidate)
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  return ee.Feature(null, stats).set('year', year);
+};
+
+// ------------------------------------------------------------
+// 33. Persistent Patch-এর সূচকের বার্ষিক তালিকা তৈরি
+// ------------------------------------------------------------
+var patchIndexSeries = ee.FeatureCollection([
+  getPatchStats(index2023, 2023),
+  getPatchStats(index2024, 2024),
+  getPatchStats(index2025, 2025)
+]);
+print('Persistent-candidate patch NDVI + MNDWI:', patchIndexSeries);
+
+// ------------------------------------------------------------
+// 34. Persistent Patch-এর NDVI–MNDWI রেখাচিত্র
+// ------------------------------------------------------------
+var patchIndexChart = ui.Chart.feature.byFeature(patchIndexSeries, 'year', ['NDVI', 'MNDWI'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Mean NDVI and MNDWI — Persistent Candidate Pixels',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Mean Index Value', viewWindow: { min: -1, max: 1 } },
+    lineWidth: 2,
+    pointSize: 7
+  });
+print(patchIndexChart);
+
+// ============================================================
+// অংশ I
+// পরিবর্তনের আগে–পরে NDVI ও MNDWI তুলনা
+// ============================================================
+// ------------------------------------------------------------
+// 35. ২০২৪–২০২৫ সালের গড় NDVI ও MNDWI তৈরি
+// পরবর্তী অবস্থার সূচক হিসেবে ২০২৪ ও ২০২৫ সালের গড় NDVI–MNDWI ব্যবহার।
+var postIndices = ee.ImageCollection.fromImages([
+  index2024.select(['NDVI', 'MNDWI']),
+  index2025.select(['NDVI', 'MNDWI'])
+])
+  .mean();
+
+// ------------------------------------------------------------
+// 36. NDVI-এর পরিবর্তন:
+// পরবর্তী গড় (২০২৪–২০২৫) − ২০২৩
+// ------------------------------------------------------------
+var ndviChange = postIndices
+  .select('NDVI')
+  .subtract(index2023.select('NDVI'))
+  .rename('NDVI_change')
+  .updateMask(persistentCandidate);
+Map.addLayer(ndviChange, {
+  min: -0.5,
+  max: 0.5,
+  palette: ['red', 'orange', 'white', 'lightgreen', 'darkgreen']
+}, 'NDVI Change: 2023 → mean(2024-2025)', true);
+
+// ------------------------------------------------------------
+// 37. MNDWI-এর পরিবর্তন:
+// পরবর্তী গড় (২০২৪–২০২৫) − ২০২৩
+// ------------------------------------------------------------
+var mndwiChange = postIndices
+  .select('MNDWI')
+  .subtract(index2023.select('MNDWI'))
+  .rename('MNDWI_change')
+  .updateMask(persistentCandidate);
+Map.addLayer(mndwiChange, {
+  min: -0.5,
+  max: 0.5,
+  palette: ['brown', 'white', 'lightblue', 'blue']
+}, 'MNDWI Change: 2023 → mean(2024-2025)', true);
+
+// ------------------------------------------------------------
+// 38. Persistent Patch-এ NDVI–MNDWI পরিবর্তনের গড়
+// ------------------------------------------------------------
+var meanNDVIChange = ndviChange.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+var meanMNDWIChange = mndwiChange.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+print('Mean NDVI change across persistent candidates:', meanNDVIChange);
+print('Mean MNDWI change across persistent candidates:', meanMNDWIChange);
+
+// ============================================================
+// ফলাফল ব্যাখ্যার নিয়ম — কারণ নির্ণয়ের সহায়ক, চূড়ান্ত প্রমাণ নয়
+// কেস A: trees ↓, NDVI ↓, MNDWI ↑ → গাছের বদলে বেশি ভেজা/প্লাবিত পরিবেশের সম্ভাবনা।
+// কেস B: trees ↓, NDVI ↓, MNDWI প্রায় স্থির → বৃক্ষের ঘনত্ব হ্রাস/অবক্ষয়ের সম্ভাবনা।
+// কেস C: trees ↓, NDVI প্রায় স্থির, MNDWI ↑ → উদ্ভিদ থাকলেও পৃষ্ঠের আর্দ্রতা বেড়েছে।
+// কেস D: trees অনেক ↓, NDVI–MNDWI প্রায় স্থির → Dynamic World শ্রেণির অনিশ্চয়তা পরীক্ষা প্রয়োজন।
+// সতর্কতা: জোয়ার-ভাটা, মাটির আর্দ্রতা, ঋতু, Composite-এর তারিখ ও Cloud Mask ফলকে প্রভাবিত করে।
+// ============================================================
+
+// ============================================================
+// অংশ J
+// ২০১৭–২০২৫ সময়জুড়ে NDVI ও MNDWI-এর পরিবর্তন
+// ============================================================
+//
+// উদ্দেশ্য: দীর্ঘমেয়াদি Dynamic World trees-হ্রাসের সঙ্গে Sentinel-2-এর NDVI/MNDWI-ও বদলায় কি না দেখা।
+// দ্রষ্টব্য: এই স্ক্রিপ্টে Sentinel-2 SR Harmonized-এর দীর্ঘমেয়াদি যাচাই ২০১৭–২০২৫।
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// 39. দীর্ঘমেয়াদি Sentinel-2 Surface Reflectance কালেকশন লোড
+// ------------------------------------------------------------
+// সকল বছর একই মৌসুম (নভেম্বর–ডিসেম্বর) নিয়ে তুলনা করা হচ্ছে।
+var s2Long = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(aoi)
+  .filterDate('2017-01-01', '2026-01-01');
+var csPlusLong = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+// Cloud Score+-এর মান যাচাইয়ের ব্যান্ড যুক্ত করা হচ্ছে।
+var s2LongLinked = s2Long.linkCollection(csPlusLong, ['cs_cdf']);
+// মেঘ বা নিম্নমানের পর্যবেক্ষণের পিক্সেল বাদ দেওয়া হচ্ছে।
+var s2LongClean = s2LongLinked.map(function(image) {
+  return image.updateMask(image.select('cs_cdf').gte(0.60));
+});
+
+// ------------------------------------------------------------
+// 40. NDVI ও MNDWI যোগ করার ফাংশন
+// ------------------------------------------------------------
+var addLongIndices = function(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename('MNDWI');
+  return image.addBands(ndvi).addBands(mndwi);
+};
+
+// ------------------------------------------------------------
+// 41. গবেষণার বছরগুলোর তালিকা তৈরি
+// ------------------------------------------------------------
+var indexYears = ee.List.sequence(2017, 2025);
+print('Sentinel-2 index years:', indexYears);
+
+// ------------------------------------------------------------
+// 42. প্রতিটি বছরের নভেম্বর–ডিসেম্বরের একটি করে Composite
+// ------------------------------------------------------------
+// ধাপ: প্রতিবছরের নভেম্বর–ডিসেম্বরের Sentinel-2 ইমেজ → Cloud Mask → Median Composite → NDVI/MNDWI।
+// ২০২৩–২০২৫ সালের যাচাইয়ের একই পদ্ধতি এখানে সব বছরে প্রয়োগ করা হয়েছে।
+var annualIndexCollection = ee.ImageCollection.fromImages(indexYears.map(function(year) {
+  year = ee.Number(year);
+  var start = ee.Date.fromYMD(year, 11, 1);
+  var end = ee.Date.fromYMD(year.add(1), 1, 1);
+  var yearlyS2 = s2LongClean.filterDate(start, end);
+  // প্রতিবছরের নভেম্বর–ডিসেম্বরের Median Composite।
+  var annualComposite = yearlyS2.median().clip(aoi);
+  // Composite থেকে NDVI ও MNDWI গণনা।
+  var annualIndices = addLongIndices(annualComposite).select(['NDVI', 'MNDWI']);
+  return annualIndices
+    .set('year', year)
+    .set('system:time_start', ee.Date.fromYMD(year, 12, 1).millis())
+    .set('image_count', yearlyS2.size());
+}));
+print('Annual NDVI + MNDWI collection:', annualIndexCollection);
+
+// ------------------------------------------------------------
+// 43. প্রতি বছর Sentinel-2-এর কতটি ইমেজ আছে, যাচাই
+// ------------------------------------------------------------
+// পুরোনো বছরগুলোতে Sentinel-2 SR-এর পর্যবেক্ষণ কম থাকতে পারে, তাই সংখ্যা যাচাই জরুরি।
+var indexImageCounts = ee.FeatureCollection(annualIndexCollection.map(function(image) {
+  return ee.Feature(null, { year: image.get('year'), image_count: image.get('image_count') });
+}));
+print('Sentinel-2 observations used per year:', indexImageCounts);
+
+// ============================================================
+// অংশ K
+// নির্বাচিত পিক্সেলের দীর্ঘমেয়াদি সূচক বিশ্লেষণ
+// ============================================================
+// ------------------------------------------------------------
+// 44. Candidate Point থেকে দীর্ঘমেয়াদি সূচকের মান বের করা
+// ------------------------------------------------------------
+// বিশ্লেষণের Scale = 20 মিটার।
+// কারণ MNDWI-তে B11 লাগে, যার মূল Spatial Resolution 20 মিটার।
+// ------------------------------------------------------------
+var analysisScale = 20;
+var candidateLongSeries = ee.FeatureCollection(annualIndexCollection.map(function(image) {
+  var values = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: candidatePoint,
+    scale: analysisScale,
+    bestEffort: true
+  });
+  return ee.Feature(null, values)
+    .set('year', image.get('year'))
+    .set('image_count', image.get('image_count'));
+}));
+print('Candidate-point NDVI + MNDWI — 2017–2025:', candidateLongSeries);
+
+// ------------------------------------------------------------
+// 45. Candidate Point-এর দীর্ঘমেয়াদি রেখাচিত্র
+// ------------------------------------------------------------
+var candidateLongChart = ui.Chart.feature.byFeature(candidateLongSeries, 'year', ['NDVI', 'MNDWI'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'NDVI and MNDWI — Candidate Pixel (2017–2025)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Index Value', viewWindow: { min: -1, max: 1 } },
+    lineWidth: 2,
+    pointSize: 6
+  });
+print(candidateLongChart);
+
+// ============================================================
+// অংশ L
+// Persistent Patch-এর দীর্ঘমেয়াদি সূচকের ধারা
+// ============================================================
+// ------------------------------------------------------------
+// 46. Persistent Patch-এর প্রতিবছরের গড় NDVI ও MNDWI
+// ------------------------------------------------------------
+var persistentLongSeries = ee.FeatureCollection(annualIndexCollection.map(function(image) {
+  var stats = image
+    .updateMask(persistentCandidate)
+    .reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoi,
+      scale: analysisScale,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  return ee.Feature(null, stats)
+    .set('year', image.get('year'))
+    .set('image_count', image.get('image_count'));
+}));
+print('Persistent-candidate NDVI + MNDWI — 2017–2025:', persistentLongSeries);
+
+// ------------------------------------------------------------
+// 47. Persistent Patch-এর দীর্ঘমেয়াদি রেখাচিত্র
+// ------------------------------------------------------------
+var persistentLongChart = ui.Chart.feature.byFeature(persistentLongSeries, 'year', [
+  'NDVI',
+  'MNDWI'
+])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Mean NDVI and MNDWI — Persistent Candidate Pixels (2017–2025)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Mean Index Value', viewWindow: { min: -1, max: 1 } },
+    lineWidth: 2,
+    pointSize: 6
+  });
+print(persistentLongChart);
+
+// ------------------------------------------------------------
+// 48. গুছানো বার্ষিক মানের তালিকা প্রিন্ট
+// ------------------------------------------------------------
+print('Candidate years:', candidateLongSeries.aggregate_array('year'));
+print('Candidate NDVI:', candidateLongSeries.aggregate_array('NDVI'));
+print('Candidate MNDWI:', candidateLongSeries.aggregate_array('MNDWI'));
+print('Persistent patch years:', persistentLongSeries.aggregate_array('year'));
+print('Persistent patch NDVI:', persistentLongSeries.aggregate_array('NDVI'));
+print('Persistent patch MNDWI:', persistentLongSeries.aggregate_array('MNDWI'));
+
+// ============================================================
+// যাচাইয়ের লক্ষ্য:
+// ২০১৭–২০২১ সময়ে মানগুলো তুলনামূলক স্থির ছিল কি?
+// Dynamic World-এ trees কমার সময়েই NDVI-ও কমতে শুরু করেছে কি?
+// trees কমার সঙ্গে MNDWI ক্রমে কম ঋণাত্মক বা ধনাত্মক হয়েছে কি?
+// উদাহরণ (নিচের মানগুলো কেবল ব্যাখ্যামূলক, প্রকৃত ফল নয়):
+// trees-Probability: 0.69 → 0.58 → 0.39 → 0.20 → 0.14
+// NDVI:              0.60 → 0.56 → 0.48 → 0.35 → 0.25
+// MNDWI:            -0.40 → -0.38 → -0.30 → -0.20 → -0.10
+// এমন ধারা থাকলে উদ্ভিদের সক্রিয়তা কমা ও পৃষ্ঠের আর্দ্রতা বৃদ্ধির সম্ভাবনা জোরালো হয়।
+// ------------------------------------------------------------
+
+// ============================================================
+// অংশ M
+// বৃক্ষ-হ্রাসের সম্ভাব্য পিক্সেলগুলোর ক্ষেত্রফল নির্ণয়
+// ============================================================
+//
+// গুরুত্বপূর্ণ: এই আয়তন শুধু Probability-ভিত্তিক শর্ত পূরণ করা পিক্সেলের ক্ষেত্রফল।
+// তাই এগুলোকে Candidate Tree-Decline Area বা Persistent Candidate Area বলব;
+// যাচাই ছাড়া নিশ্চিত বন উজাড়ের (Deforestation) আয়তন বলা যাবে না।
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// 49. প্রতি পিক্সেলের ক্ষেত্রফল হেক্টরে রূপান্তর
+// ------------------------------------------------------------
+// ee.Image.pixelArea() বর্গমিটারে আয়তন দেয়; ১ হেক্টর = ১০,০০০ বর্গমিটার।
+// ------------------------------------------------------------
+var pixelAreaHa = ee.Image.pixelArea().divide(10000).rename('area_ha');
+
+// ------------------------------------------------------------
+// 50. সহায়ক ফাংশন:
+// যেকোনো Boolean Mask-এর আওতাধীন ক্ষেত্রফল হিসাব
+// ------------------------------------------------------------
+// Boolean Mask-এ 1 থাকা পিক্সেলের pixelArea() যোগ করে হেক্টর পাওয়া যায়।
+var calculateAreaHa = function(maskImage) {
+  var area = pixelAreaHa
+    .updateMask(maskImage)
+    .reduceRegion({
+      reducer: ee.Reducer.sum(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  return ee.Number(area.get('area_ha'));
+};
+
+// ------------------------------------------------------------
+// 51. সংরক্ষিত এলাকার মোট আয়তন
+// ------------------------------------------------------------
+var totalAOIAreaHa = ee.Number(aoi.area()).divide(10000);
+print('Total Nijhum Dwip AOI area (ha):', totalAOIAreaHa);
+
+// ------------------------------------------------------------
+// 52. ২০১৭ সালের Baseline উচ্চ-trees এলাকার আয়তন
+// ------------------------------------------------------------
+// শর্ত: ২০১৭ সালের trees-Probability > 0.60।
+var baselineHighTreeAreaHa = calculateAreaHa(baselineForestMask);
+print('2017 high-tree baseline area (ha):', baselineHighTreeAreaHa);
+
+// ------------------------------------------------------------
+// 53. সম্ভাব্য trees-Probability হ্রাস পাওয়া এলাকার আয়তন
+// ------------------------------------------------------------
+// শর্ত: ২০১৭-এ trees > 0.60 এবং পরবর্তী কোনো বছরে সর্বোচ্চ trees-হ্রাস > 0.25।
+var candidateDeclineAreaHa = calculateAreaHa(candidateDisturbance);
+print('Candidate tree-decline area (ha):', candidateDeclineAreaHa);
+
+// ------------------------------------------------------------
+// 54. ধারাবাহিক (Persistent) trees-হ্রাসের সম্ভাব্য আয়তন
+// ------------------------------------------------------------
+// শর্ত: ২০১৭-এ trees > 0.60 এবং পরবর্তী অন্তত ২টি পরপর বছরে trees-হ্রাস > 0.25।
+var persistentDeclineAreaHa = calculateAreaHa(persistentCandidate);
+print('Persistent tree-decline candidate area (ha):', persistentDeclineAreaHa);
+
+// ------------------------------------------------------------
+// 55. Baseline এলাকার তুলনায় Candidate Area (%)
+// ------------------------------------------------------------
+var candidatePercentBaseline = candidateDeclineAreaHa.divide(baselineHighTreeAreaHa).multiply(100);
+print('Candidate decline area (% of 2017 high-tree baseline):', candidatePercentBaseline);
+
+// ------------------------------------------------------------
+// 56. Baseline এলাকার তুলনায় Persistent Area (%)
+// ------------------------------------------------------------
+var persistentPercentBaseline = persistentDeclineAreaHa
+  .divide(baselineHighTreeAreaHa)
+  .multiply(100);
+print('Persistent decline area (% of 2017 high-tree baseline):', persistentPercentBaseline);
+
+// ------------------------------------------------------------
+// 57. পুরো জাতীয় উদ্যানের তুলনায় Persistent Area (%)
+// ------------------------------------------------------------
+var persistentPercentAOI = persistentDeclineAreaHa.divide(totalAOIAreaHa).multiply(100);
+print('Persistent decline area (% of total AOI):', persistentPercentAOI);
+
+// ------------------------------------------------------------
+// 58. ক্ষেত্রফলের সারসংক্ষেপ টেবিল তৈরি
+// ------------------------------------------------------------
+var areaSummary = ee.FeatureCollection([
+  ee.Feature(null, {
+    total_AOI_ha: totalAOIAreaHa,
+    baseline_high_tree_2017_ha: baselineHighTreeAreaHa,
+    candidate_tree_decline_ha: candidateDeclineAreaHa,
+    persistent_tree_decline_ha: persistentDeclineAreaHa,
+    candidate_pct_of_baseline: candidatePercentBaseline,
+    persistent_pct_of_baseline: persistentPercentBaseline,
+    persistent_pct_of_AOI: persistentPercentAOI
+  })
+]);
+print('TREE-DECLINE AREA SUMMARY:', areaSummary);
+
+// ============================================================
+// অংশ N
+// সর্বোচ্চ বৃক্ষ-হ্রাসের বছর অনুযায়ী সারসংক্ষেপ
+// ============================================================
+//
+// উদ্দেশ্য: প্রতিটি Persistent পিক্সেলের ২০১৮–২০২৫ সময়ের মধ্যে কোন বছরে ২০১৭-এর তুলনায়
+// trees-Probability সবচেয়ে বেশি কমেছে তা বের করা; এরপর বছরভিত্তিক ক্ষেত্রফল (হেক্টর) হিসাব।
+// সতর্কতা: এটি সর্বোচ্চ হ্রাসের বছর; হ্রাস *প্রথম শুরু* হওয়ার বছর নাও হতে পারে।
+// ------------------------------------------------------------
+// 59. Baseline-পরবর্তী বছরগুলোর তালিকা
+// ------------------------------------------------------------
+var changeYears = ee.List.sequence(2018, 2025);
+
+// ------------------------------------------------------------
+// 60. সর্বোচ্চ বৃক্ষ-হ্রাসের বছর অনুযায়ী ক্ষেত্রফল
+// ------------------------------------------------------------
+// প্রতিটি সর্বোচ্চ-হ্রাসের বছরের জন্য আলাদা Mask নিয়ে আয়তন গণনা।
+var yearOfMaxDropSummary = ee.FeatureCollection(changeYears.map(function(year) {
+  year = ee.Number(year);
+  // নির্দিষ্ট বছরে সর্বোচ্চ trees-হ্রাস হওয়া পিক্সেল নির্বাচন।
+  var yearMask = maxDropYear
+    .eq(year)
+    // শুধু Persistent Candidate পিক্সেল হিসাবের মধ্যে রাখা।
+    .and(persistentCandidate);
+  // পিক্সেলের ক্ষেত্রফল হেক্টরে হিসাব।
+  var areaDict = pixelAreaHa
+    .updateMask(yearMask)
+    .reduceRegion({
+      reducer: ee.Reducer.sum(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  // কোনো বছরে পিক্সেল না থাকলে null-এর বদলে 0 নেওয়া।
+  var areaHa = ee.Number(ee.Algorithms.If(areaDict.contains('area_ha'), areaDict.get('area_ha'), 0));
+  // মোট Persistent Candidate এলাকার কত শতাংশ তা নির্ণয়।
+  var percentPersistent = areaHa.divide(persistentDeclineAreaHa).multiply(100);
+  return ee.Feature(null, {
+    year: year,
+    area_ha: areaHa,
+    pct_of_persistent_area: percentPersistent
+  });
+}));
+print('YEAR OF MAXIMUM TREE DROP — AREA SUMMARY:', yearOfMaxDropSummary);
+
+// ------------------------------------------------------------
+// 61. সাজানো বছরের তালিকা
+// ------------------------------------------------------------
+print('Years:', yearOfMaxDropSummary.aggregate_array('year'));
+print('Area by maximum-drop year (ha):', yearOfMaxDropSummary.aggregate_array('area_ha'));
+print('% of persistent area by year:', yearOfMaxDropSummary
+  .aggregate_array('pct_of_persistent_area'));
+
+// ------------------------------------------------------------
+// 62. গুণগত যাচাই (QC):
+// প্রতিবছরের সর্বোচ্চ হ্রাসের এলাকা যোগ করে মিলিয়ে দেখা
+// ------------------------------------------------------------
+// বছরভিত্তিক ক্ষেত্রফলের যোগফল মোট Persistent Area-র প্রায় সমান হওয়া উচিত।
+// আগের ফলাফলের আনুমানিক রেফারেন্স: 193.07 হেক্টর (বর্তমান রান-এ ভিন্ন হতে পারে)।
+var summedYearAreaHa = ee.Number(yearOfMaxDropSummary.aggregate_sum('area_ha'));
+print('Sum of year-specific persistent areas (ha):', summedYearAreaHa);
+print('Previously calculated persistent area (ha):', persistentDeclineAreaHa);
+
+// ------------------------------------------------------------
+// 63. QC-এর জন্য ক্ষেত্রফলের পার্থক্য বের করা
+// ------------------------------------------------------------
+var yearAreaDifference = summedYearAreaHa.subtract(persistentDeclineAreaHa);
+print('QC difference (ha):', yearAreaDifference);
+
+// ------------------------------------------------------------
+// 64. বছরভিত্তিক Bar Chart
+// ------------------------------------------------------------
+var yearOfMaxDropChart = ui.Chart.feature.byFeature(yearOfMaxDropSummary, 'year', ['area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Persistent Tree-Decline Area by Year of Maximum Drop',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(yearOfMaxDropChart);
+
+// ============================================================
+// অংশ O
+// ধারাবাহিক বৃক্ষ-হ্রাস প্রথম শুরু হওয়ার বছর
+// ============================================================
+// সংজ্ঞা: সবচেয়ে আগে পাওয়া এমন পরপর দুই বছরের জোড়ার প্রথম বছর,
+// যার *উভয়* বছরে ২০১৭-এর তুলনায় trees-Probability হ্রাস dropThreshold-এর বেশি।
+// উদাহরণ: ২০১৮-তে হ্রাস, ২০১৯–২০২০-তে নয়, ২০২১–২০২২-তে হ্রাস → শুরুর বছর ২০২১।
+// সতর্কতা: এটি Threshold-ভিত্তিক কাজের সংজ্ঞা; পরিসংখ্যানগত Significance Test নয়।
+// ============================================================
+// ------------------------------------------------------------
+// 65. পরপর বছরের প্রতিটি Pair-কে তার শুরুর বছর হিসেবে দেখানো
+// প্রতিটি পরপর বছরের Pair-এর শুরুর বছর নির্ণয়
+// ------------------------------------------------------------
+// consecutivePairImages-এ ২০১৮–১৯ থেকে ২০২৪–২৫ পর্যন্ত পরপর বছরের জোড়া আছে।
+// যেকোনো জোড়ার উভয় বছর Threshold ছাড়ানো পিক্সেলেই মান 1।
+var firstPersistentDeclineYearCollection = consecutivePairImages.map(function(image) {
+  var startYear = ee.Number(image.get('start_year')).toInt();
+  // যে জোড়া পরপর হ্রাস দেখায়, তার শুরুর বছর দিয়ে ইমেজ তৈরি।
+  var startYearImage = ee.Image.constant(startYear)
+    .rename('first_persistent_decline_year')
+    .toInt16()
+    // শুধু ওই জোড়ায় ধারাবাহিক হ্রাস হওয়া পিক্সেল রাখা।
+    .updateMask(image.eq(1))
+    // চূড়ান্ত Persistent Candidate পিক্সেলের বাইরে সব বাদ দেওয়া।
+    .updateMask(persistentCandidate);
+  return startYearImage;
+});
+
+// ------------------------------------------------------------
+// 66. Persistent হ্রাসের সবচেয়ে প্রথম শুরুর বছর বের করা
+// ------------------------------------------------------------
+// একাধিক বৈধ জোড়ার শুরুর বছর ২০২১, ২০২২, ২০২৪ হলে `.min()` দিয়ে ২০২১ নেওয়া হয়।
+// ------------------------------------------------------------
+// প্রথম বৈধ জোড়ার শুরুর বছর নিতে .min() ব্যবহার।
+var firstPersistentDeclineYear = firstPersistentDeclineYearCollection
+  .min()
+  .rename('first_persistent_decline_year')
+  .toInt16();
+
+// ------------------------------------------------------------
+// সাময়িক নাম-সামঞ্জস্য: অংশ P ও R-এ firstDeclineYear ব্যবহৃত হয়েছে।
+// এখানে সেটিকে উন্নত firstPersistentDeclineYear-ই ধরা হয়েছে, যাতে পরের অংশগুলোর কোড বদলাতে না হয়।
+var firstDeclineYear = firstPersistentDeclineYear;
+
+// ------------------------------------------------------------
+// 67. প্রথম Persistent হ্রাসের বছর মানচিত্রে দেখানো
+// ------------------------------------------------------------
+Map.addLayer(firstPersistentDeclineYear, {
+  min: 2018,
+  max: 2024,
+  palette: ['blue', 'cyan', 'green', 'yellow', 'orange', 'red', 'magenta']
+}, 'First Persistent Tree-Decline Year', true);
+
+// ------------------------------------------------------------
+// 68. একবার Grouped Reduction করে বছরভিত্তিক ক্ষেত্রফল হিসাব
+// ------------------------------------------------------------
+// প্রতি বছরের জন্য আলাদা reduceRegion() না চালিয়ে একবারেই Grouped Reduction করা হচ্ছে।
+// Band 0 = area_ha; Band 1 = first_persistent_decline_year (যে বছর অনুযায়ী গ্রুপ হবে)।
+var firstPersistentAreaImage = pixelAreaHa.addBands(firstPersistentDeclineYear);
+// Reducer.sum().group() দিয়ে একই সঙ্গে বছরভিত্তিক Area Group করা।
+var firstPersistentGroupedResult = firstPersistentAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum().group({ groupField: 1, groupName: 'year' }),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+
+// ------------------------------------------------------------
+// 69. Grouped Result থেকে টেবিল তৈরি
+// ------------------------------------------------------------
+var firstPersistentGroups = ee.List(firstPersistentGroupedResult.get('groups'));
+var firstPersistentDeclineSummary = ee.FeatureCollection(firstPersistentGroups.map(function(item) {
+  item = ee.Dictionary(item);
+  var year = ee.Number(item.get('year')).toInt();
+  var areaHa = ee.Number(item.get('sum'));
+  var percentage = areaHa.divide(persistentDeclineAreaHa).multiply(100);
+  return ee.Feature(null, { year: year, area_ha: areaHa, pct_of_persistent_area: percentage });
+}))
+  .sort('year');
+print('FIRST PERSISTENT DECLINE YEAR — AREA SUMMARY:', firstPersistentDeclineSummary);
+
+// ------------------------------------------------------------
+// 70. হিসাবের মিল যাচাই (QC)
+// ------------------------------------------------------------
+// সব শুরুর বছরের ক্ষেত্রফলের যোগফল মোট Persistent Area-র প্রায় সমান হওয়া উচিত।
+var firstPersistentAreaTotal = ee.Number(firstPersistentDeclineSummary.aggregate_sum('area_ha'));
+print('First-persistent-onset area total (ha):', firstPersistentAreaTotal);
+print('Persistent candidate area (ha):', persistentDeclineAreaHa);
+print('QC difference (ha):', firstPersistentAreaTotal.subtract(persistentDeclineAreaHa));
+
+// ------------------------------------------------------------
+// 71. বছরভিত্তিক Bar Chart
+// ------------------------------------------------------------
+var firstPersistentDeclineChart = ui.Chart.feature.byFeature(firstPersistentDeclineSummary, 'year', ['area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Persistent Tree-Decline Area by First Persistent Decline Year',
+    hAxis: { title: 'First Year of Consecutive Decline' },
+    vAxis: { title: 'Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(firstPersistentDeclineChart);
+
+// ============================================================
+// অংশ O-B
+// ধারাবাহিক হ্রাস শুরুর পরের সময়ের সর্বোচ্চ হ্রাস
+// ============================================================
+//
+// উদ্দেশ্য: প্রতিটি Persistent পিক্সেলে প্রথম Persistent শুরুর বছর নির্ণয় করে
+// তার আগের সব বছর বাদ দিয়ে শুরুর বছর থেকে সর্বোচ্চ trees-হ্রাসের বছর খুঁজে বের করা।
+// এতে আগে ঘটে যাওয়া বিচ্ছিন্ন হ্রাসকে Persistent পর্যায়ের সর্বোচ্চ হ্রাস ধরা হবে না।
+// ============================================================
+// ------------------------------------------------------------
+// A. Persistent হ্রাস শুরুর আগের বছরগুলো বাদ দেওয়া
+// শুরুর বছর থেকে পরের বছরগুলোর Drop Image ব্যবহার
+// ------------------------------------------------------------
+var persistentEpisodeDrops = annualDrops.map(function(image) {
+  var year = ee.Number(image.get('year'));
+  // পিক্সেলভিত্তিক তুলনার জন্য Image Year-কে Constant Raster-এ রূপান্তর।
+  var yearImage = ee.Image.constant(year).toInt16();
+  // শুধু `current year >= firstPersistentDeclineYear` হলে বছরের ইমেজ রাখা।
+  var afterOnsetMask = yearImage.gte(firstPersistentDeclineYear);
+  return image
+    .updateMask(afterOnsetMask)
+    .updateMask(persistentCandidate)
+    .copyProperties(image, ['year', 'system:time_start']);
+});
+
+// ------------------------------------------------------------
+// B. Persistent পর্যায়ে সর্বোচ্চ trees-হ্রাস নির্ণয়
+// ------------------------------------------------------------
+// শুরু হওয়ার আগের বছরের হ্রাস বাদ দিয়ে নতুন সর্বোচ্চ হ্রাস নির্ণয়।
+var persistentEpisodeMaxComposite = persistentEpisodeDrops.qualityMosaic('tree_drop');
+
+// ------------------------------------------------------------
+// C. সর্বোচ্চ trees-হ্রাসের পরিমাণ
+// ------------------------------------------------------------
+var persistentEpisodeMaxTreeDrop = persistentEpisodeMaxComposite
+  .select('tree_drop')
+  .rename('persistent_episode_max_tree_drop')
+  .updateMask(persistentCandidate);
+
+// ------------------------------------------------------------
+// D. Persistent পর্যায়ের সর্বোচ্চ হ্রাসের বছর
+// ------------------------------------------------------------
+var persistentEpisodeMaxDropYear = persistentEpisodeMaxComposite
+  .select('drop_year')
+  .rename('persistent_episode_max_drop_year')
+  .toInt16()
+  .updateMask(persistentCandidate);
+
+// ------------------------------------------------------------
+// E. মানচিত্রে প্রদর্শন
+// ------------------------------------------------------------
+Map.addLayer(persistentEpisodeMaxDropYear, {
+  min: 2018,
+  max: 2025,
+  palette: ['blue', 'cyan', 'green', 'yellow', 'orange', 'red', 'purple', 'magenta']
+}, 'Maximum Drop Year — Persistent Episode', false);
+
+// ------------------------------------------------------------
+// F. পরীক্ষা:
+// পুরোনো পদ্ধতিতে কত এলাকায় সর্বোচ্চ হ্রাস শুরু হওয়ার আগেই ঘটেছিল?
+// ------------------------------------------------------------
+// আগের পদ্ধতিতে যেসব পিক্সেলে Lag ঋণাত্মক হতো, সেগুলোর আয়তন যাচাই।
+var oldMaximumBeforePersistentOnset = maxDropYear
+  .lt(firstPersistentDeclineYear)
+  .and(persistentCandidate);
+var oldMaximumBeforeOnsetAreaHa = calculateAreaHa(oldMaximumBeforePersistentOnset);
+print('Area where OLD maximum occurred before persistent onset (ha):', oldMaximumBeforeOnsetAreaHa);
+
+// ------------------------------------------------------------
+// G. নতুন Lag-এর সর্বনিম্ন ও সর্বোচ্চ মান পরীক্ষা
+// ------------------------------------------------------------
+var persistentEpisodeLagCheck = persistentEpisodeMaxDropYear
+  .subtract(firstPersistentDeclineYear)
+  .rename('persistent_episode_lag');
+var lagCheckStats = persistentEpisodeLagCheck.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+print('Persistent-episode lag min/max:', lagCheckStats);
+
+// ============================================================
+// অংশ P
+// হ্রাস শুরু থেকে সর্বোচ্চ হ্রাস পর্যন্ত সময়ের ব্যবধান
+// ============================================================
+//
+// উদ্দেশ্য: Persistent হ্রাস হঠাৎ, দ্রুত, ধীরে নাকি দীর্ঘ সময় ধরে হয়েছে তা বোঝা।
+// Lag (বছর) = maxDropYear − firstDeclineYear।
+// ------------------------------------------------------------
+// 70. শুরু থেকে সর্বোচ্চ হ্রাস পর্যন্ত Lag-এর ইমেজ
+// ------------------------------------------------------------
+// Lag = সর্বোচ্চ হ্রাসের বছর − Persistent শুরুর বছর; ফল ০ বা বেশি হওয়ার কথা।
+var declineLagYears = persistentEpisodeMaxDropYear
+  .subtract(firstPersistentDeclineYear)
+  .rename('lag_years')
+  .toInt16()
+  .updateMask(persistentCandidate);
+Map.addLayer(declineLagYears, {
+  min: 0,
+  max: 7,
+  palette: ['red', 'orange', 'yellow', 'lightgreen', 'green', 'cyan', 'blue', 'purple']
+}, 'Onset-to-Maximum Decline Lag', true);
+
+// ------------------------------------------------------------
+// 71. Lag-এর বিভিন্ন বছরের তালিকা
+// ------------------------------------------------------------
+var lagValues = ee.List.sequence(0, 7);
+
+// ------------------------------------------------------------
+// 72. Lag অনুযায়ী ক্ষেত্রফলের হিসাব
+// ------------------------------------------------------------
+var lagSummary = ee.FeatureCollection(lagValues.map(function(lag) {
+  lag = ee.Number(lag);
+  var lagMask = declineLagYears.eq(lag);
+  var areaDict = pixelAreaHa
+    .updateMask(lagMask)
+    .reduceRegion({
+      reducer: ee.Reducer.sum(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  var areaHa = ee.Number(ee.Algorithms.If(areaDict.contains('area_ha'), areaDict.get('area_ha'), 0));
+  var percentPersistent = areaHa.divide(persistentDeclineAreaHa).multiply(100);
+  return ee.Feature(null, {
+    lag_years: lag,
+    area_ha: areaHa,
+    pct_of_persistent_area: percentPersistent
+  });
+}));
+print('ONSET-TO-MAXIMUM LAG SUMMARY:', lagSummary);
+
+// ------------------------------------------------------------
+// 73. ক্ষেত্রফল মিলিয়ে দেখা (QC)
+// ------------------------------------------------------------
+var lagAreaSum = ee.Number(lagSummary.aggregate_sum('area_ha'));
+print('Sum of lag-class areas (ha):', lagAreaSum);
+print('Persistent candidate area (ha):', persistentDeclineAreaHa);
+
+// ------------------------------------------------------------
+// 74. Lag অনুযায়ী Bar Chart
+// ------------------------------------------------------------
+var lagChart = ui.Chart.feature.byFeature(lagSummary, 'lag_years', ['area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Persistent Tree-Decline Area by Onset-to-Maximum Lag',
+    hAxis: { title: 'Lag (years)' },
+    vAxis: { title: 'Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(lagChart);
+
+// ============================================================
+// অংশ Q
+// হ্রাসের গতিভেদে কার্যকরী (Operational) শ্রেণিবিন্যাস
+// ============================================================
+//
+// Lag অনুযায়ী শ্রেণি: ০ বছর = আকস্মিক; ১ বছর = দ্রুত;
+// ২–৩ বছর = ক্রমশ; ৪+ বছর = দীর্ঘমেয়াদি ক্রমশ।
+// এগুলো বিশ্লেষণের সুবিধার শ্রেণি; যাচাইকৃত Ecological Process নয়।
+// ------------------------------------------------------------
+// 75. পরিবর্তনের গতিভিত্তিক শ্রেণির Raster তৈরি
+// ------------------------------------------------------------
+//
+// কোড: 1=আকস্মিক, 2=দ্রুত, 3=ক্রমশ, 4=দীর্ঘমেয়াদি ক্রমশ।
+// ------------------------------------------------------------
+// Lag অনুযায়ী ১–৪ Code বসিয়ে পরিবর্তনের গতি আলাদা করা হচ্ছে।
+var processClass = ee.Image(0)
+  .where(declineLagYears.eq(0), 1)
+  .where(declineLagYears.eq(1), 2)
+  .where(declineLagYears.gte(2)
+    .and(declineLagYears.lte(3)), 3)
+  .where(declineLagYears.gte(4), 4)
+  .rename('process_class')
+  .updateMask(persistentCandidate)
+  .toInt8();
+Map.addLayer(processClass, {
+  min: 1,
+  max: 4,
+  palette: [
+    'red', // আকস্মিক হ্রাস
+    'orange', // দ্রুত হ্রাস
+    'green', // ক্রমশ হ্রাস
+    'blue' // দীর্ঘমেয়াদি ক্রমশ হ্রাস
+  ]
+}, 'Decline Process Class', false);
+
+// ------------------------------------------------------------
+// 76. পরিবর্তনের গতিভিত্তিক শ্রেণির সারসংক্ষেপ
+// ------------------------------------------------------------
+var processCodes = ee.List.sequence(1, 4);
+// শ্রেণির লেবেল: 1=আকস্মিক, 2=দ্রুত, 3=ক্রমশ, 4=দীর্ঘমেয়াদি ক্রমশ।
+var processLabels = ee.List(['Abrupt', 'Rapid', 'Progressive', 'Prolonged progressive']);
+var processSummary = ee.FeatureCollection(processCodes.map(function(code) {
+  // কোডকে পূর্ণসংখ্যায় রূপান্তর।
+  code = ee.Number(code).toInt();
+  var classMask = processClass.eq(code);
+  var areaDict = pixelAreaHa
+    .updateMask(classMask)
+    .reduceRegion({
+      reducer: ee.Reducer.sum(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e9,
+      tileScale: 4
+    });
+  var areaHa = ee.Number(ee.Algorithms.If(areaDict.contains('area_ha'), areaDict.get('area_ha'), 0));
+  var percentage = areaHa.divide(persistentDeclineAreaHa).multiply(100);
+  // কোড 1 → তালিকার Index 0
+  // কোড 2 → তালিকার Index 1
+  // কোড 3 → তালিকার Index 2
+  // কোড 4 → তালিকার Index 3
+  var label = processLabels.get(code.subtract(1));
+  return ee.Feature(null, {
+    process_code: code,
+    process: label,
+    area_ha: areaHa,
+    pct_of_persistent_area: percentage
+  });
+}));
+print('DECLINE PROCESS SUMMARY:', processSummary);
+var processAreaTotal = ee.Number(processSummary.aggregate_sum('area_ha'));
+print('Process-area QC total (ha):', processAreaTotal);
+// // ============================================================
+// // অংশ R — পুরোনো/নিষ্ক্রিয় কোড: প্রথম হ্রাসের বছর × সর্বোচ্চ হ্রাসের বছর
+// // উদ্দেশ্য: প্রতিটি Persistent পিক্সেলের শুরুর বছর ও সর্বোচ্চ হ্রাসের বছরের জোড়া অনুযায়ী আয়তন বের করা।
+// // উদাহরণ: শুরু ২০২১, সর্বোচ্চ হ্রাস ২০২৫ → ২০২১-এ প্রথম Threshold পার হয়, ২০২৫-এ সবচেয়ে বেশি কমে।
+// // এই পুরোনো পদ্ধতির কোড নিচে কমেন্ট করে রাখা হয়েছে; পরের Optimized সংস্করণটি সক্রিয়।
+// // ------------------------------------------------------------
+// var transitionPairList =
+//   changeYears.map(function(firstYear) {
+//     firstYear =
+//       ee.Number(firstYear)
+//         .toInt();
+//     return changeYears.map(function(maxYear) {
+//       maxYear =
+//         ee.Number(maxYear)
+//           .toInt();
+// / শুরুর বছর ও সর্বোচ্চ হ্রাসের বছর উভয়ই মিলে এমন পিক্সেল নির্বাচন।
+//       var pairMask =
+//         firstDeclineYear
+//           .eq(firstYear)
+//           .and(
+//             maxDropYear.eq(
+//               maxYear
+//             )
+//           )
+//           .and(
+//             persistentCandidate
+//           );
+//       // Calculate area in hectares.
+//       var areaDict =
+//         pixelAreaHa
+//           .updateMask(
+//             pairMask
+//           )
+//           .reduceRegion({
+//             reducer:
+//               ee.Reducer.sum(),
+//             geometry:
+//               aoi,
+//             scale:
+//               10,
+//             maxPixels:
+//               1e9,
+//             tileScale:
+//               4
+//           });
+// / নির্দিষ্ট বছরের জোড়ায় পিক্সেল না থাকলে ক্ষেত্রফল 0।
+//       var areaHa =
+//         ee.Number(
+//           ee.Algorithms.If(
+//             areaDict.contains(
+//               'area_ha'
+//             ),
+//             areaDict.get(
+//               'area_ha'
+//             ),
+//             0
+//           )
+//         );
+//       var percentage =
+//         areaHa
+//           .divide(
+//             persistentDeclineAreaHa
+//           )
+//           .multiply(100);
+// / শুরুর বছর থেকে সর্বোচ্চ হ্রাসের বছর পর্যন্ত ব্যবধান।
+//       var lagYears =
+//         maxYear.subtract(
+//           firstYear
+//         );
+//       return ee.Feature(
+//         null,
+//         {
+//           first_decline_year:
+//             firstYear,
+//           max_drop_year:
+//             maxYear,
+//           lag_years:
+//             lagYears,
+//           area_ha:
+//             areaHa,
+//           pct_of_persistent_area:
+//             percentage
+//         }
+//       );
+//     });
+//   });
+// / Nested List-কে `.flatten()` দিয়ে একটি একক FeatureCollection-এ রূপান্তর।
+// var transitionMatrix =
+//   ee.FeatureCollection(
+//     ee.List(
+//       transitionPairList
+//     ).flatten()
+//   );
+// print(
+//   'FULL ONSET × MAX-DROP TRANSITION MATRIX:',
+//   transitionMatrix
+// );
+// ------------------------------------------------------------
+// 78. শূন্য আয়তনবিশিষ্ট জোড়া বাদ দেওয়া
+// ------------------------------------------------------------
+// // শূন্য-আয়তনের জোড়া বাদ দিলে টেবিল পড়া সহজ হয়।
+// var nonZeroTransitions =
+//   transitionMatrix.filter(
+//     ee.Filter.gt(
+//       'area_ha',
+//       0
+//     )
+//   );
+// print(
+//   'NON-ZERO ONSET → MAXIMUM-DROP TRANSITIONS:',
+//   nonZeroTransitions
+// );
+// ------------------------------------------------------------
+// 79. QC:
+// Transition Matrix-এর সব ক্ষেত্রফলের যোগফল
+// ------------------------------------------------------------
+// var transitionAreaTotal =
+//   ee.Number(
+//     transitionMatrix
+//       .aggregate_sum(
+//         'area_ha'
+//       )
+//   );
+// print(
+//   'Transition-matrix QC total (ha):',
+//   transitionAreaTotal
+// );
+// print(
+//   'Persistent candidate area (ha):',
+//   persistentDeclineAreaHa
+// );
+// ------------------------------------------------------------
+// 80. Stacked Transition Chart
+// ------------------------------------------------------------
+// X-axis = প্রথম উল্লেখযোগ্য হ্রাসের বছর; প্রতিটি রঙ = সর্বোচ্চ হ্রাসের বছর;
+// Bar-এর উচ্চতা = ক্ষেত্রফল (হেক্টর)।
+// ------------------------------------------------------------
+// 
+// ============================================================
+// অংশ R — উন্নত ও দ্রুততর সংস্করণ
+// প্রথম হ্রাসের বছর × সর্বোচ্চ হ্রাসের বছরের Transition Matrix
+// ============================================================
+//
+// এই দ্রুততর পদ্ধতিতে ৬৪ বার reduceRegion() না চালিয়ে একবার Grouped Reduction করা হয়েছে।
+// Transition Code উদাহরণ: প্রথম হ্রাস ২০২১, সর্বোচ্চ হ্রাস ২০২৫ → 2021 × 10000 + 2025 = 20212025।
+// ============================================================
+// ------------------------------------------------------------
+// 77. প্রতিটি বছরের জোড়ার জন্য Transition Code তৈরি
+// ------------------------------------------------------------
+// দুই বছরকে একটিমাত্র পূর্ণসংখ্যা Code-এ রাখলে Grouping সহজ হয়।
+var transitionCode = firstDeclineYear
+  .toInt32()
+  .multiply(10000)
+  .add(persistentEpisodeMaxDropYear.toInt32())
+  .rename('transition_code')
+  .updateMask(persistentCandidate);
+
+// ------------------------------------------------------------
+// 78. পিক্সেলের ক্ষেত্রফল ও Transition Code একত্র করা
+// ------------------------------------------------------------
+var transitionAreaImage = pixelAreaHa.addBands(transitionCode);
+
+// ------------------------------------------------------------
+// 79. একবার Grouped Reduction করে ক্ষেত্রফল হিসাব
+// ------------------------------------------------------------
+// Band 0 = area_ha, Band 1 = transition_code।
+// groupField: 1 অর্থ দ্বিতীয় ব্যান্ডের Transition Code অনুযায়ী Area যোগ হবে।
+// একটি Grouped Reducer দিয়ে সব Transition Pair-এর Area হিসাব।
+var transitionGroupedResult = transitionAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum().group({ groupField: 1, groupName: 'transition_code' }),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+
+// ------------------------------------------------------------
+// 80. Grouped Result থেকে FeatureCollection তৈরি
+// ------------------------------------------------------------
+var transitionGroups = ee.List(transitionGroupedResult.get('groups'));
+var transitionSummary = ee.FeatureCollection(transitionGroups.map(function(item) {
+  item = ee.Dictionary(item);
+  var code = ee.Number(item.get('transition_code')).toInt();
+  // Transition Code থেকে প্রথম হ্রাসের বছর উদ্ধার।
+  var firstYear = code.divide(10000).floor().toInt();
+  // Transition Code থেকে সর্বোচ্চ হ্রাসের বছর উদ্ধার।
+  var maxYear = code.mod(10000).toInt();
+  var areaHa = ee.Number(item.get('sum'));
+  var lagYears = maxYear.subtract(firstYear);
+  var percentage = areaHa.divide(persistentDeclineAreaHa).multiply(100);
+  return ee.Feature(null, {
+    first_decline_year: firstYear,
+    max_drop_year: maxYear,
+    lag_years: lagYears,
+    area_ha: areaHa,
+    pct_of_persistent_area: percentage
+  });
+}));
+print('NON-ZERO ONSET → MAXIMUM-DROP TRANSITIONS:', transitionSummary);
+
+// ------------------------------------------------------------
+// 81. মোট ক্ষেত্রফল যাচাই (QC)
+// ------------------------------------------------------------
+var transitionAreaTotal = ee.Number(transitionSummary.aggregate_sum('area_ha'));
+print('Transition-matrix QC total (ha):', transitionAreaTotal);
+print('Persistent candidate area (ha):', persistentDeclineAreaHa);
+
+// ------------------------------------------------------------
+// 82. যেসব পিক্সেলে সর্বোচ্চ হ্রাস ঘটেছে ২০২৫ সালে
+// ------------------------------------------------------------
+var transitionsTo2025 = transitionSummary.filter(ee.Filter.eq('max_drop_year', 2025));
+print('ONSET YEARS OF PIXELS WITH MAXIMUM DECLINE IN 2025:', transitionsTo2025);
+
+// ------------------------------------------------------------
+// 83. Stacked Transition Chart
+// ------------------------------------------------------------
+var transitionChart = ui.Chart.feature.groups(transitionSummary, 'first_decline_year', 'area_ha', 'max_drop_year')
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Tree-Decline Pathways: First Decline → Maximum Decline',
+    hAxis: { title: 'First Substantial Decline Year' },
+    vAxis: { title: 'Area (ha)' },
+    isStacked: true,
+    legend: { position: 'right' }
+  });
+print(transitionChart);
+
+// ------------------------------------------------------------
+// 84. ২০২৫ সালে সর্বোচ্চ হ্রাস পাওয়া পিক্সেলের প্রথম হ্রাসের বছর
+// ------------------------------------------------------------
+var onsetTo2025Chart = ui.Chart.feature.byFeature(transitionsTo2025, 'first_decline_year', ['area_ha'])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Onset Years of Pixels Reaching Maximum Decline in 2025',
+    hAxis: { title: 'First Substantial Decline Year' },
+    vAxis: { title: 'Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(onsetTo2025Chart);
+
+// ============================================================
+// অংশ S
+// Tree-drop Threshold বদলালে ফল কতটা বদলায় (Sensitivity)
+// ============================================================
+//
+// উদ্দেশ্য: trees-হ্রাসের Threshold 0.20 (কম কঠোর), 0.25 (মূল) ও 0.30 (বেশি কঠোর)
+// ধরলে প্রধান ফলাফল প্রায় একই থাকে কি না যাচাই।
+// স্থির থাকবে: ২০১৭-এর trees-Baseline Threshold = 0.60।
+// Persistent = Threshold-এর বেশি হ্রাস অন্তত ২টি পরপর বছরে।
+// সর্বোচ্চ হ্রাস খোঁজা হবে কেবল Persistent পর্যায় শুরু হওয়ার পর থেকে।
+// ============================================================
+// ------------------------------------------------------------
+// 85. Tree-drop Threshold অনুযায়ী বিশ্লেষণ তৈরির ফাংশন
+// ------------------------------------------------------------
+// প্রতিটি Threshold-এ একই Workflow চালিয়ে তুলনাযোগ্য ফল তৈরি।
+var buildSensitivityCase = function(threshold, tag) {
+
+  // --------------------------------------------------------
+  // A. প্রতিবছর Threshold পেরোনোর Flag
+  // --------------------------------------------------------
+  var flags = annualDrops
+    .map(function(image) {
+      return image
+        .select('tree_drop')
+        .gt(threshold)
+        .rename('substantial_decline')
+        .toByte()
+        .set('year', image.get('year'));
+    })
+    .sort('year');
+  var flagList = flags.toList(flags.size());
+
+  // --------------------------------------------------------
+  // B. পরপর দুই বছরের Pair
+  // --------------------------------------------------------
+  var pairCollection = ee.ImageCollection.fromImages(ee.List.sequence(0, flags.size().subtract(2))
+    .map(function(i) {
+      i = ee.Number(i);
+      var firstImage = ee.Image(flagList.get(i));
+      var secondImage = ee.Image(flagList.get(i.add(1)));
+      var pair = firstImage.and(secondImage).rename('consecutive_decline').toByte();
+      return pair
+        .set('start_year', firstImage.get('year'))
+        .set('end_year', secondImage.get('year'));
+    }));
+
+  // --------------------------------------------------------
+  // C. ধারাবাহিক হ্রাসের Candidate Mask
+  // --------------------------------------------------------
+  var persistent = pairCollection.max().eq(1).and(baselineForestMask).rename('persistent_' + tag);
+
+  // --------------------------------------------------------
+  // D. Persistent হ্রাস শুরু হওয়ার প্রথম বছর
+  // --------------------------------------------------------
+  var onsetCollection = pairCollection.map(function(image) {
+    var startYear = ee.Number(image.get('start_year')).toInt();
+    return ee.Image.constant(startYear)
+      .rename('persistent_onset')
+      .toInt16()
+      .updateMask(image.eq(1))
+      .updateMask(persistent);
+  });
+  var onset = onsetCollection.min().rename('persistent_onset').toInt16();
+
+  // --------------------------------------------------------
+  // E. শুরু হওয়ার বছর থেকে সর্বোচ্চ হ্রাস খোঁজা
+  // --------------------------------------------------------
+  var episodeDrops = annualDrops.map(function(image) {
+    var year = ee.Number(image.get('year'));
+    var yearImage = ee.Image.constant(year).toInt16();
+    var afterOnset = yearImage.gte(onset);
+    return image.updateMask(afterOnset).updateMask(persistent);
+  });
+  var episodeMaxComposite = episodeDrops.qualityMosaic('tree_drop');
+  var episodeMaxYear = episodeMaxComposite
+    .select('drop_year')
+    .rename('episode_max_year')
+    .toInt16()
+    .updateMask(persistent);
+
+  // --------------------------------------------------------
+  // F. শুরুর বছর → সর্বোচ্চ হ্রাসের Lag
+  // --------------------------------------------------------
+  var lag = episodeMaxYear.subtract(onset).rename('lag_years').toInt16().updateMask(persistent);
+
+  // --------------------------------------------------------
+  // G. যেকোনো বছরে উল্লেখযোগ্য হ্রাসের Candidate
+  // --------------------------------------------------------
+  var candidate = baselineForestMask.and(maxTreeDrop.gt(threshold));
+
+  // --------------------------------------------------------
+  // H. সময়ের ধরন অনুযায়ী Mask
+  // --------------------------------------------------------
+  // Lag >= 2 হলে ক্রমশ বা দীর্ঘমেয়াদি ক্রমশ হ্রাস হিসেবে গণনা।
+  var lag2Plus = persistent.and(lag.gte(2));
+  var maxIn2025 = persistent.and(episodeMaxYear.eq(2025));
+
+  // --------------------------------------------------------
+  // I. ক্ষেত্রফল হিসাবের ব্যান্ড তৈরি
+  // --------------------------------------------------------
+  // এখানে reduceRegion() চালানো হয়নি; তিন Threshold-এর Area Band আগে তৈরি হচ্ছে।
+  // সবগুলো Band একত্র করে পরে মাত্র একবার Reduction করা হবে।
+  var areaBands = ee.Image.cat([
+    pixelAreaHa.updateMask(candidate).rename(tag + '_candidate_ha'),
+    pixelAreaHa.updateMask(persistent).rename(tag + '_persistent_ha'),
+    pixelAreaHa.updateMask(lag2Plus).rename(tag + '_lag2plus_ha'),
+    pixelAreaHa.updateMask(maxIn2025).rename(tag + '_max2025_ha')
+  ]);
+  // Earth Engine Object-গুলোসহ একটি সাধারণ JavaScript Object ফেরত দেওয়া হচ্ছে।
+  return {
+    areaBands: areaBands,
+    persistent: persistent,
+    onset: onset,
+    episodeMaxYear: episodeMaxYear,
+    lag: lag
+  };
+};
+
+// ============================================================
+// 86. তিনটি Threshold-এ তিনটি বিশ্লেষণ চালানো
+// ============================================================
+var sensitivity20 = buildSensitivityCase(0.20, 'T20');
+var sensitivity25 = buildSensitivityCase(0.25, 'T25');
+var sensitivity30 = buildSensitivityCase(0.30, 'T30');
+
+// ============================================================
+// 87. সব Threshold-এর ক্ষেত্রফল-ব্যান্ড একত্র করা
+// ============================================================
+// একটি reduceRegion() দিয়ে একাধিক Threshold-এর Area হিসাবের জন্য ব্যান্ড একত্র।
+var sensitivityAreaImage = ee.Image.cat([
+  sensitivity20.areaBands,
+  sensitivity25.areaBands,
+  sensitivity30.areaBands
+]);
+
+// ============================================================
+// 88. একটি Reduction-এ তিন Threshold-এর ক্ষেত্রফল
+// ============================================================
+var sensitivityAreaStats = sensitivityAreaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9,
+  tileScale: 4
+});
+print('RAW THRESHOLD-SENSITIVITY AREA STATISTICS:', sensitivityAreaStats);
+
+// ============================================================
+// 89. নিরাপদে Area Value পাওয়ার সহায়ক ফাংশন
+// ============================================================
+var getSensitivityArea = function(key) {
+  return ee.Number(ee.Algorithms.If(sensitivityAreaStats
+    .contains(key), sensitivityAreaStats
+      .get(key), 0));
+};
+
+// ============================================================
+// 90. সারসংক্ষেপের একটি Row তৈরির ফাংশন
+// ============================================================
+var makeSensitivityRow = function(threshold, tag) {
+  var candidateArea = getSensitivityArea(tag + '_candidate_ha');
+  var persistentArea = getSensitivityArea(tag + '_persistent_ha');
+  var lag2PlusArea = getSensitivityArea(tag + '_lag2plus_ha');
+  var max2025Area = getSensitivityArea(tag + '_max2025_ha');
+  var persistentPctBaseline = persistentArea.divide(baselineHighTreeAreaHa).multiply(100);
+  var persistentPctCandidate = persistentArea.divide(candidateArea).multiply(100);
+  var lag2PlusPct = lag2PlusArea.divide(persistentArea).multiply(100);
+  var max2025Pct = max2025Area.divide(persistentArea).multiply(100);
+  return ee.Feature(null, {
+    drop_threshold: threshold,
+    candidate_area_ha: candidateArea,
+    persistent_area_ha: persistentArea,
+    persistent_pct_of_baseline: persistentPctBaseline,
+    persistent_pct_of_candidate: persistentPctCandidate,
+    lag_2plus_area_ha: lag2PlusArea,
+    lag_2plus_pct_of_persistent: lag2PlusPct,
+    max_2025_area_ha: max2025Area,
+    max_2025_pct_of_persistent: max2025Pct
+  });
+};
+
+// ============================================================
+// 91. Threshold Sensitivity-র চূড়ান্ত টেবিল
+// ============================================================
+var thresholdSensitivitySummary = ee.FeatureCollection([
+  makeSensitivityRow(0.20, 'T20'),
+  makeSensitivityRow(0.25, 'T25'),
+  makeSensitivityRow(0.30, 'T30')
+]);
+print('DROP-THRESHOLD SENSITIVITY SUMMARY:', thresholdSensitivitySummary);
+
+// ============================================================
+// 92. গুরুত্বপূর্ণ QC:
+// Threshold 0.25-এর ফল মূল বিশ্লেষণের সঙ্গে মিলেছে কি?
+// ============================================================
+var sensitivityT25PersistentArea = getSensitivityArea('T25_persistent_ha');
+print('QC — T25 persistent area (ha):', sensitivityT25PersistentArea);
+print('QC — Main persistent area (ha):', persistentDeclineAreaHa);
+print('QC — T25 minus main analysis (ha):', sensitivityT25PersistentArea
+  .subtract(persistentDeclineAreaHa));
+
+// ============================================================
+// 93. Persistent Area-র Bar Chart
+// ============================================================
+var sensitivityAreaChart = ui.Chart.feature.byFeature(thresholdSensitivitySummary, 'drop_threshold', [
+  'persistent_area_ha'
+])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Sensitivity of Persistent Tree-Decline Area to Drop Threshold',
+    hAxis: { title: 'Tree-Probability Drop Threshold' },
+    vAxis: { title: 'Persistent Candidate Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(sensitivityAreaChart);
+
+// ============================================================
+// অংশ T
+// Baseline trees Threshold বদলালে ফল কতটা বদলায়
+// ============================================================
+// উদ্দেশ্য: ২০১৭ সালের উচ্চ-trees Baseline Threshold 0.55, 0.60 (মূল), 0.65 বদলালে ফল স্থিতিশীল থাকে কি না দেখা।
+// স্থির থাকবে: trees-হ্রাসের Threshold = 0.25;
+// Persistent = অন্তত ২টি পরপর বছরে trees-হ্রাস > 0.25;
+// সর্বোচ্চ হ্রাস খোঁজা হবে Persistent পর্যায়ের শুরুর বছর থেকে।
+// ============================================================
+// ------------------------------------------------------------
+// 94. Tree-drop Threshold স্থির রাখা
+// ------------------------------------------------------------
+var sensitivityDropThreshold = 0.25;
+
+// ------------------------------------------------------------
+// 95. গুরুত্বপূর্ণ সতর্কতা:
+// পুরোনো >0.60 Mask ছাড়া মূল Maximum Drop ব্যবহার করতে হবে
+// ------------------------------------------------------------
+// এখানে maxTreeDrop নয়: সেটিতে আগেই baselineForestMask (>0.60) প্রয়োগ করা আছে।
+// Baseline Threshold বদলানোর সময় Mask ছাড়া Raw Maximum Drop ব্যবহার জরুরি।
+var rawMaxTreeDrop = maxDropComposite.select('tree_drop').rename('raw_max_tree_drop');
+
+// ------------------------------------------------------------
+// 96. Drop Threshold অনুযায়ী Flag শুধু একবার তৈরি
+// ------------------------------------------------------------
+// Baseline trees-Threshold বদলাবে; কিন্তু trees-হ্রাসের Threshold 0.25-ই থাকবে।
+// ------------------------------------------------------------
+var baselineSensitivityFlags = annualDrops
+  .map(function(image) {
+    return image
+      .select('tree_drop')
+      .gt(sensitivityDropThreshold)
+      .rename('substantial_decline')
+      .toByte()
+      .set('year', image.get('year'));
+  })
+  .sort('year');
+var baselineSensitivityFlagList = baselineSensitivityFlags.toList(baselineSensitivityFlags.size());
+
+// ------------------------------------------------------------
+// 97. পরপর বছরের Decline Pair শুধু একবার তৈরি
+// ------------------------------------------------------------
+var baselineSensitivityPairs = ee.ImageCollection.fromImages(ee.List.sequence(0, baselineSensitivityFlags
+  .size()
+  .subtract(2))
+  .map(function(i) {
+    i = ee.Number(i);
+    var firstImage = ee.Image(baselineSensitivityFlagList.get(i));
+    var secondImage = ee.Image(baselineSensitivityFlagList.get(i.add(1)));
+    var pair = firstImage.and(secondImage).rename('consecutive_decline').toByte();
+    return pair.set('start_year', firstImage.get('year')).set('end_year', secondImage.get('year'));
+  }));
+
+// ============================================================
+// 98. Baseline Threshold অনুযায়ী বিশ্লেষণ তৈরির ফাংশন
+// ============================================================
+// Baseline Threshold ছাড়া অন্য বিশ্লেষণ-শর্ত অপরিবর্তিত রেখে Sensitivity যাচাই।
+var buildBaselineSensitivityCase = function(treeThreshold, tag) {
+
+  // --------------------------------------------------------
+  // A. ২০১৭ সালের উচ্চ-trees Baseline
+  // --------------------------------------------------------
+  var baselineMask = baselineTree.gt(treeThreshold).rename('baseline_' + tag);
+
+  // --------------------------------------------------------
+  // B. যেকোনো বছরে উল্লেখযোগ্য হ্রাস
+  // --------------------------------------------------------
+  var candidate = baselineMask.and(rawMaxTreeDrop.gt(sensitivityDropThreshold));
+
+  // --------------------------------------------------------
+  // C. Persistent হ্রাস
+  // --------------------------------------------------------
+  var persistent = baselineSensitivityPairs
+    .max()
+    .eq(1)
+    .and(baselineMask)
+    .rename('persistent_' + tag);
+
+  // --------------------------------------------------------
+  // D. Persistent হ্রাসের প্রথম বছর
+  // --------------------------------------------------------
+  var onsetCollection = baselineSensitivityPairs
+    .map(function(image) {
+      var startYear = ee.Number(image.get('start_year')).toInt();
+      return ee.Image.constant(startYear)
+        .rename('persistent_onset')
+        .toInt16()
+        .updateMask(image.eq(1))
+        .updateMask(persistent);
+    });
+  var onset = onsetCollection.min().rename('persistent_onset').toInt16();
+
+  // --------------------------------------------------------
+  // E. Persistent পর্যায়ের সর্বোচ্চ হ্রাস
+  // --------------------------------------------------------
+  var episodeDrops = annualDrops.map(function(image) {
+    var year = ee.Number(image.get('year'));
+    var yearImage = ee.Image.constant(year).toInt16();
+    var afterOnset = yearImage.gte(onset);
+    return image.updateMask(afterOnset).updateMask(persistent);
+  });
+  var episodeMaxComposite = episodeDrops.qualityMosaic('tree_drop');
+  var episodeMaxYear = episodeMaxComposite
+    .select('drop_year')
+    .rename('episode_max_year')
+    .toInt16()
+    .updateMask(persistent);
+
+  // --------------------------------------------------------
+  // F. শুরু → সর্বোচ্চ হ্রাসের Lag
+  // --------------------------------------------------------
+  var lag = episodeMaxYear.subtract(onset).rename('lag_years').toInt16().updateMask(persistent);
+
+  // --------------------------------------------------------
+  // G. সময়ভিত্তিক সূচক
+  // --------------------------------------------------------
+  var lag2Plus = persistent.and(lag.gte(2));
+  var maxIn2025 = persistent.and(episodeMaxYear.eq(2025));
+
+  // --------------------------------------------------------
+  // H. ক্ষেত্রফল হিসাবের ব্যান্ড তৈরি
+  // --------------------------------------------------------
+  var areaBands = ee.Image.cat([
+    pixelAreaHa.updateMask(baselineMask).rename(tag + '_baseline_ha'),
+    pixelAreaHa.updateMask(candidate).rename(tag + '_candidate_ha'),
+    pixelAreaHa.updateMask(persistent).rename(tag + '_persistent_ha'),
+    pixelAreaHa.updateMask(lag2Plus).rename(tag + '_lag2plus_ha'),
+    pixelAreaHa.updateMask(maxIn2025).rename(tag + '_max2025_ha')
+  ]);
+  return {
+    areaBands: areaBands,
+    baselineMask: baselineMask,
+    persistent: persistent,
+    onset: onset,
+    episodeMaxYear: episodeMaxYear,
+    lag: lag
+  };
+};
+
+// ============================================================
+// 99. তিন Baseline Threshold-এ তিনটি বিশ্লেষণ
+// ============================================================
+var baseline55 = buildBaselineSensitivityCase(0.55, 'B55');
+var baseline60 = buildBaselineSensitivityCase(0.60, 'B60');
+var baseline65 = buildBaselineSensitivityCase(0.65, 'B65');
+
+// ============================================================
+// 100. সব Baseline Case-এর Area Band একত্র করা
+// ============================================================
+var baselineSensitivityAreaImage = ee.Image.cat([
+  baseline55.areaBands,
+  baseline60.areaBands,
+  baseline65.areaBands
+]);
+
+// ============================================================
+// 101. একবার Reduction করে তিন Baseline Case-এর ক্ষেত্রফল
+// ============================================================
+var baselineSensitivityStats = baselineSensitivityAreaImage
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: aoi,
+    scale: 10,
+    maxPixels: 1e9,
+    tileScale: 4
+  });
+print('RAW BASELINE-THRESHOLD SENSITIVITY STATISTICS:', baselineSensitivityStats);
+
+// ============================================================
+// 102. নিরাপদে Area Value পাওয়ার সহায়ক ফাংশন
+// ============================================================
+var getBaselineSensitivityArea = function(key) {
+  return ee.Number(ee.Algorithms.If(baselineSensitivityStats
+    .contains(key), baselineSensitivityStats
+      .get(key), 0));
+};
+
+// ============================================================
+// 103. সারসংক্ষেপের একটি Row তৈরি
+// ============================================================
+var makeBaselineSensitivityRow = function(treeThreshold, tag) {
+  var baselineArea = getBaselineSensitivityArea(tag + '_baseline_ha');
+  var candidateArea = getBaselineSensitivityArea(tag + '_candidate_ha');
+  var persistentArea = getBaselineSensitivityArea(tag + '_persistent_ha');
+  var lag2PlusArea = getBaselineSensitivityArea(tag + '_lag2plus_ha');
+  var max2025Area = getBaselineSensitivityArea(tag + '_max2025_ha');
+  return ee.Feature(null, {
+    baseline_tree_threshold: treeThreshold,
+    baseline_area_ha: baselineArea,
+    candidate_area_ha: candidateArea,
+    persistent_area_ha: persistentArea,
+    persistent_pct_of_baseline: persistentArea.divide(baselineArea).multiply(100),
+    persistent_pct_of_candidate: persistentArea.divide(candidateArea).multiply(100),
+    lag_2plus_area_ha: lag2PlusArea,
+    lag_2plus_pct_of_persistent: lag2PlusArea.divide(persistentArea).multiply(100),
+    max_2025_area_ha: max2025Area,
+    max_2025_pct_of_persistent: max2025Area.divide(persistentArea).multiply(100)
+  });
+};
+
+// ============================================================
+// 104. Baseline Sensitivity-র চূড়ান্ত টেবিল
+// ============================================================
+var baselineThresholdSensitivitySummary = ee.FeatureCollection([
+  makeBaselineSensitivityRow(0.55, 'B55'),
+  makeBaselineSensitivityRow(0.60, 'B60'),
+  makeBaselineSensitivityRow(0.65, 'B65')
+]);
+print('BASELINE TREE-THRESHOLD SENSITIVITY SUMMARY:', baselineThresholdSensitivitySummary);
+
+// ============================================================
+// 105. মূল বিশ্লেষণের ফলের সঙ্গে মিল যাচাই (QC)
+// ============================================================
+var baseline60PersistentArea = getBaselineSensitivityArea('B60_persistent_ha');
+print('QC — B60 persistent area (ha):', baseline60PersistentArea);
+print('QC — Main persistent area (ha):', persistentDeclineAreaHa);
+print('QC — B60 minus main analysis (ha):', baseline60PersistentArea
+  .subtract(persistentDeclineAreaHa));
+
+// ============================================================
+// 106. Persistent Area-র তুলনামূলক Chart
+// ============================================================
+var baselineSensitivityChart = ui.Chart.feature.byFeature(baselineThresholdSensitivitySummary, 'baseline_tree_threshold', [
+  'persistent_area_ha'
+])
+  .setChartType('ColumnChart')
+  .setOptions({
+    title: 'Sensitivity of Persistent Tree-Decline Area to 2017 Baseline Threshold',
+    hAxis: { title: '2017 Tree-Probability Threshold' },
+    vAxis: { title: 'Persistent Candidate Area (ha)' },
+    legend: { position: 'none' }
+  });
+print(baselineSensitivityChart);
