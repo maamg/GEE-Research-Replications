@@ -83,6 +83,7 @@ Map.addLayer(baselineForestMask.selfMask(), { palette: ['darkgreen'] }, '2017 Hi
 // ------------------------------------------------------------
 // হ্রাস = ২০১৭-এর trees Probability − সংশ্লিষ্ট বছরের trees Probability।
 var post2017 = annualDW9.filter(ee.Filter.gt('year', baselineYear));
+
 var annualDrops = post2017.map(function(image) {
   var year = ee.Number(image.get('year'));
   var currentTree = image.select('trees');
