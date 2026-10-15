@@ -82,7 +82,7 @@ Map.addLayer(baselineForestMask.selfMask(), { palette: ['darkgreen'] }, '2017 Hi
 // 5. ২০১৭-পরবর্তী বছরগুলোর trees-Probability হ্রাস নির্ণয়
 // ------------------------------------------------------------
 // হ্রাস = ২০১৭-এর trees Probability − সংশ্লিষ্ট বছরের trees Probability।
-var post2017 = annualDW9.filter(ee.Filter.gt('year', baselineYear));
+var post2017 = annualDW9.filter(ee.Filter.gt('year', baselineYear));   // 17 এর চেয়ে বড় সালের ইমেজগুরলো ফিল্টার করা
 
 var annualDrops = post2017.map(function(image) {
   var year = ee.Number(image.get('year'));
@@ -128,10 +128,13 @@ var declineFlags = annualDrops
       .set('year', image.get('year'));
   })
   .sort('year');
+  
 var declineYearCount = declineFlags
   .sum()
   .rename('decline_year_count')
   .updateMask(baselineForestMask);
+  
+Map.addLayer(declineYearCount);
 
 // ------------------------------------------------------------
 // 7C. যেকোনো দুটি বা বেশি বছরে হ্রাস পাওয়া পিক্সেল
