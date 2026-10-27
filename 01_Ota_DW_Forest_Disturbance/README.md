@@ -30,15 +30,15 @@ Some scripts also contain maps, charts, area summaries, and diagnostic outputs. 
 
 ### Code guide
 
-The following files are currently available in [`01_Ota_DW_Forest_Disturbance/`](01_Ota_DW_Forest_Disturbance/):
+The following files are currently available in [`01_Ota_DW_Forest_Disturbance/`](./):
 
 | Script | Purpose |
 | --- | --- |
-| [`01_AOI_DW_Inspection`](01_Ota_DW_Forest_Disturbance/01_AOI_DW_Inspection) | Initial study-area and Dynamic World inspection. |
-| [`02_Probability_Preprocessing`](01_Ota_DW_Forest_Disturbance/02_Probability_Preprocessing) | Early probability-preprocessing exploration. |
-| [`02_Nijhum_Annual_9Band_Analysis`](01_Ota_DW_Forest_Disturbance/02_Nijhum_Annual_9Band_Analysis) | Annual nine-class probability analysis for Nijhum Dwip. |
-| [`03_Nijhum_Tree_Disturbance_Search`](01_Ota_DW_Forest_Disturbance/03_Nijhum_Tree_Disturbance_Search) | Tree-probability decline candidate screening. |
-| **[`04_Nijhum_Forest_Disturbance_Exploratory.js`](01_Ota_DW_Forest_Disturbance/04_Nijhum_Forest_Disturbance_Exploratory.js)** | **Main exploratory script:** expanded temporal analysis and diagnostics. |
+| [`01_AOI_DW_Inspection`](./01_AOI_DW_Inspection) | Initial study-area and Dynamic World inspection. |
+| [`02_Probability_Preprocessing`](./02_Probability_Preprocessing) | Early probability-preprocessing exploration. |
+| [`02_Nijhum_Annual_9Band_Analysis`](./02_Nijhum_Annual_9Band_Analysis) | Annual nine-class probability analysis for Nijhum Dwip. |
+| [`03_Nijhum_Tree_Disturbance_Search`](./03_Nijhum_Tree_Disturbance_Search) | Tree-probability decline candidate screening. |
+| **[`04_Nijhum_Forest_Disturbance_Exploratory.js`](./04_Nijhum_Forest_Disturbance_Exploratory.js)** | **Main exploratory script:** expanded temporal analysis and diagnostics. |
 
 **Additional development material:** `03_Annual_Probability_TimeSeries` and `04_Bhawal_Disturbance_Candidates` document earlier site/method experiments. Two older Nijhum attribution files (`04_Nijhum_Disturbance_Attribution` and `_updated`) are retained as development versions and substantially overlap with the main exploratory script. The root-level `reformated_code` is an experimental draft, **not the validated implementation of the Dynamic World method**.
 
@@ -70,6 +70,17 @@ This project was motivated by:
 **Li, Ota & Mizoue (2024).** *Attribution of forest disturbance types based on the Dynamic World class probability data: A case study of Myanmar.* *International Journal of Applied Earth Observation and Geoinformation*. [Read the article](https://www.sciencedirect.com/science/article/pii/S1569843224005727).
 
 The published study serves as **methodological inspiration**. The scripts here reflect my own learning, site experiments and exploratory adaptations; they should **not** be described as an exact implementation or reproduction of its full workflow, results, or accuracy assessment.
+
+## Results and quality-control status
+
+The present repository contains GEE scripts for maps, time-series charts, area summaries, year-of-decline diagnostics, and threshold-sensitivity analyses. **Curated figures and numerical output tables have not yet been checked and exported for this README.** Interpret all displayed maps as exploratory candidates until external reference data have been used to assess classification and disturbance-detection accuracy.
+
+**Recommended evidence package (pending verification):**
+
+1. Study-area location and 2017 high-tree-probability baseline (WDPA boundary).
+2. Persistent candidate tree-probability decline, labelled explicitly as **baseline-relative screening**, not verified deforestation.
+3. Selected location probability trajectories and supporting Sentinel-2 2023/2024/2025 imagery.
+4. Drop-threshold (0.20/0.25/0.30) and baseline-threshold (0.55/0.60/0.65) sensitivity tables, with GEE QC differences (T25/B60 versus main calculation).
 
 ## Next steps
 
